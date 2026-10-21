@@ -1,0 +1,33 @@
+# Runtime data of a monitoring host. Only the README.txt placeholders are tracked.
+creds/*
+!creds/README.txt
+state/*
+!state/README.txt
+events/*
+!events/README.txt
+metrics/*
+!metrics/README.txt
+reports/*
+!reports/README.txt
+installers/*
+!installers/README.txt
+prometheus/
+/grafana/
+/node_exporter/
+
+# Build output and test scratch
+dist/
+tools/test/out/
+*.part
+__pycache__/
+
+# Site configuration (appliance names and addresses); start from Cohesity.config.example.json
+Cohesity.config.json
+# Site theme (brand, colours, logo); start from monitoring/theme.example.json. The published
+# dashboards are written from the package's by Publish-CohesityDashboards.ps1.
+monitoring/theme.json
+monitoring/theme/
+monitoring/dashboards-live/
+
+# Superpowers plan workspaces (ledgers, briefs, review packages)
+.superpowers/

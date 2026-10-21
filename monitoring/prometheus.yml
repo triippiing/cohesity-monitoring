@@ -1,0 +1,15 @@
+# Prometheus config for the Cohesity monitoring host.
+# windows_exporter (Windows) or node_exporter (Linux) serves the Cohesity textfile metrics (and the host's own metrics) on :9182.
+global:
+  scrape_interval: 60s
+  evaluation_interval: 60s
+
+scrape_configs:
+  - job_name: cohesity
+    static_configs:
+      - targets: ['127.0.0.1:9182']
+    # Keep only the Cohesity series plus the textfile collector's own health metrics (either exporter).
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'cohesity_.*|windows_textfile_.*|node_textfile_.*'
+        action: keep

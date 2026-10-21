@@ -1,0 +1,51 @@
+# Changelog
+
+The package version is in `VERSION`, printed by the installer, and published by the collector as `cohesity_collector_info{version="..."}` (visible on the Instance dashboard, Collector row).
+
+## 5.2.1 (2026-10-18)
+
+- Dashboard banner: one line, the logo and brand line followed by the package version (`Publish-CohesityDashboards.ps1` fills in the install folder's `VERSION`); the dashboard title and description lines are gone (the title is in Grafana's breadcrumb).
+- Section headers and card sections: no dot before the section name.
+- README screenshots re-rendered.
+
+## 5.2.0 (2026-10-18)
+
+- Dashboard theme: every dashboard opens with a banner (brand line, title, description), and each section (Health, Capacity and so on) is headed by a full-width rounded pill in the theme's colours instead of a Grafana row; sections no longer collapse. `monitoring/theme.example.json` lists the colours, brand line and logo; a site copies it to `monitoring/theme.json` (git-ignored, not shipped) and `Publish-CohesityDashboards.ps1` writes the dashboards in that theme to `monitoring/dashboards-live/`, which is now the folder Grafana's provider loads. Without a theme the dashboards keep Grafana's colours.
+- Card sections: with Grafana's Business Text panel plugin (`marcusolsson-dynamictext-panel` 6.2.0) installed, every row of stat panels (Fleet Estate; Instance Health, Capacity, Replication, Collector; Activity Now; Events last 24 hours; Patch Management versions) is one navy panel under its header pill with a rounded card per value, at the same thresholds and value mappings. Fleet's Estate adds a health summary. The variants live in `monitoring/dashboards-html/`; without the plugin the dashboards keep their stat panels.
+- Installers: `Get-CohesityInstallers.ps1` (`-BusinessTextVersion`) and `linux/get-installers.sh` (`--business-text-version`) also download the plugin zip; `Install-CohesityMonitoring.ps1` and `linux/install.sh` unpack it into Grafana's plugin folder, publish the dashboards and point the provider at `monitoring/dashboards-live`. An existing install re-runs the installer once (README, Upgrading).
+- Test kit: `validate_dashboards.py` also checks the queries of `monitoring/dashboards-html/`; `render_dashboards.py` screenshots every dashboard in a running Grafana (`--full` for whole pages like `docs/images`) and fails on a panel error. The README screenshots are re-rendered.
+
+## 5.1.0 (2026-10-06)
+
+- Linux host support: `linux/install.sh` installs the stack on RHEL family 8/9, Debian 12 or Ubuntu LTS (x86_64, systemd) and is idempotent: service account `cohesity`, PowerShell 7 from its tarball when `pwsh` is missing, credential prompts, node_exporter, Prometheus and Grafana unpacked into the install folder, systemd units and a collector timer rendered from `linux/systemd/`, and `--uninstall`. `linux/cohesity-control.sh` (status / stop / start / pause / resume) and `linux/get-installers.sh` (downloads the four tarballs; `--print-urls` for offline hosts) are the counterparts of the Windows scripts. Nothing in the collector, the module or the dashboards changed.
+- Collector-only mode: `install.sh --collector-only` installs the collector and node_exporter for a host that sends its metrics to an existing Prometheus and Grafana (node_exporter then listens on `0.0.0.0:9182`; `--listen` changes it). The installer prints the scrape job to add.
+- Package: `tools/build-package.py` also builds `dist/Cohesity-monitoring-v<VERSION>.tar.gz`, the same files as the zip with the `linux/` scripts executable.
+- `monitoring/prometheus.yml` is shared by both installs; its keep regex is now `cohesity_.*|windows_textfile_.*|node_textfile_.*`, so the textfile collector's own health metrics are kept from either exporter.
+- CI (`.github/workflows/ci.yml`): shellcheck and parse checks, the test kit against the mock API, the Linux install in Rocky Linux 9 and Debian 12 containers, and a full systemd install on a runner.
+- Test kit: `tools/test/linux/` (the `test_*.sh` tests run by `run.sh`, and `smoke.sh`); `tools/test/prometheus-test.yml` now needs Prometheus 3 (`fallback_scrape_protocol`).
+- README: Install on a Linux machine, Linux paragraphs for upgrade, maintenance and uninstall; the architecture block names node_exporter. `CLAUDE.md` describes the Linux layout, the shell-script rules and the Linux tests.
+
+## 5.0.1 (2026-10-05)
+
+- Dashboards: tables built from several queries (dedupe jobs, replication jobs, policies, reclamation policy, and the others that combine an `_info` series with values) now show one row per item. Grafana's merge transformation refused to join rows because each query's `__name__` differed, so the generator drops `__name__` and `Time` before merging.
+- Instance dashboard: Collector row shows the package version, last run, failing checks and collection time.
+- README: screenshots of the five dashboards and the Prometheus/exporter pages (`docs/images`), rendered from the test kit's mock API.
+- Test kit: the mock API uses documentation addresses (192.0.2.x) only, names replica sources VTL-SRC-1/2 and gives the Nightly policy a replication target, so the Instance replication tables render with data.
+
+## 5.0.0 (2026-10-01)
+
+- Five dashboards for a multi-appliance estate replace Estate and Detail: **Fleet**, **Activity**, **Instance**, **Patch Management**, **Events**. When upgrading, delete `monitoring\dashboards\cohesity-estate.json` and `cohesity-detail.json`.
+- Collector (49 checks): per-job dedupe and replication checks (`dedupejobs`, `replicationjobs`) with collector-recorded first-seen times; reclamation/prune run tracking (running since, last run start/end/duration/result); parallel collection with `-MaxParallel` (one process per appliance when there are more than two, each writing `cohesity-<server>.prom`); `cohesity_event_recent` now carries the event time as its value; `cohesity_collector_info` version metric.
+- Package: `VERSION`, this changelog, `Get-CohesityInstallers.ps1` (downloads the three third-party installers), `CohesityMonitoringControl.ps1` (status / stop / start / pause / resume), README sections for a clean install and host maintenance.
+
+## 4.1 (2026-10-01)
+
+- Fixed HTTP 415 on `GET /virtualtape` (tape inventory): the call needs a JSON body; on Windows PowerShell 5.1 it is sent through `curl.exe`.
+
+## 4.0 (2026-10-01)
+
+- Collector v2: 47 independent checks on 5/15/60-minute cadences with a result cache; event log download (`PUT /server/event`) with a daily CSV archive; run-history ratios; tape inventory; replica age; physical libraries; import/export jobs; hourly configuration checks. `DisabledChecks` and `CollectEventLog` settings. "Cohesity Detail" dashboard.
+
+## 3.0 (2026-10-01)
+
+- First self-contained package: `Install-CohesityMonitoring.ps1` (credential files, windows_exporter, Prometheus as a startup task, Grafana with a provisioned data source and dashboard, collector task), collector v1, "Cohesity Estate" dashboard, ad-hoc report scripts.
