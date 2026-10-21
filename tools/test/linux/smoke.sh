@@ -309,7 +309,7 @@ wait_for_prometheus_data() {
 # errors N empty N", must show no errors and at least one query that returned data.
 validate_dashboards() {
     local out last re='^queries ([0-9]+) +errors ([0-9]+) +empty ([0-9]+)$'
-    if ! out=$(python3 "$REPO/tools/test/validate_dashboards.py" --prom http://127.0.0.1:9090 --servers MOCK-A,MOCK-B); then
+    if ! out=$(python3 "$REPO/tools/test/validate_dashboards.py" --prom http://127.0.0.1:9090 --clusters MOCK-A,MOCK-B); then
         printf '%s\n' "$out"
         die 'validate_dashboards.py failed'
     fi
