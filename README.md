@@ -85,7 +85,7 @@ What you need:
 
 Steps, from an elevated cmd prompt (right-click Command Prompt > Run as administrator), logged on as the account that will run the collector:
 
-1. Extract the release zip and copy the `CohesityMonitoring` folder to a path **without spaces**, e.g. `C:\CohesityMonitoring` (or, once the package lives in a git repository, a clone of it: the checkout is the package). The windows_exporter MSI can't handle spaces in the metrics path, so the installer refuses to run from such a folder.
+1. Extract the release zip and copy the `CohesityMonitoring` folder to a path **without spaces**, e.g. `C:\CohesityMonitoring` (or, with git on the machine, `git clone https://github.com/triippiing/cohesity-monitoring.git C:\CohesityMonitoring`; the checkout is the package). The windows_exporter MSI can't handle spaces in the metrics path, so the installer refuses to run from such a folder.
 2. Get the third-party installers into `installers\`:
    ```
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CohesityMonitoring\Get-CohesityInstallers.ps1
@@ -149,7 +149,11 @@ What you need:
 
 Steps, from a shell on the host. Commands that need root start with `sudo`; the ones after step 1 run from the install folder (`cd /opt/cohesity-monitoring`):
 
-1. Put the package in `/opt/cohesity-monitoring`, a path **without spaces** (the installer refuses one). Extract the release tarball (or, once the package lives in a git repository, clone it there: the checkout is the package); it unpacks into a `CohesityMonitoring` folder, hence `--strip-components=1`:
+1. Put the package in `/opt/cohesity-monitoring`, a path **without spaces** (the installer refuses one). With git on the machine, the clone is the package:
+   ```
+   sudo git clone https://github.com/triippiing/cohesity-monitoring.git /opt/cohesity-monitoring
+   ```
+   Otherwise extract the release tarball; it unpacks into a `CohesityMonitoring` folder, hence `--strip-components=1`:
    ```
    sudo mkdir -p /opt/cohesity-monitoring
    sudo tar -xzf Cohesity-monitoring-v<ver>.tar.gz --strip-components=1 -C /opt/cohesity-monitoring
