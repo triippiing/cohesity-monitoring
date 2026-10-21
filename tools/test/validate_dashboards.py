@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """Runs every panel query of every dashboard in monitoring/dashboards/ and monitoring/dashboards-html/ against a Prometheus holding collector
 output and reports query errors and empty results. Usage:
-  python3 tools/test/validate_dashboards.py [--prom http://127.0.0.1:19090] [--servers MOCK-A,MOCK-B]"""
+  python3 tools/test/validate_dashboards.py [--prom http://127.0.0.1:19090] [--clusters MOCK-A,MOCK-B]"""
 import argparse, glob, json, os, re, urllib.error, urllib.parse, urllib.request
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--prom", default="http://127.0.0.1:19090")
-ap.add_argument("--servers", default="MOCK-A,MOCK-B", help="server label values present in Prometheus")
+ap.add_argument("--clusters", default="MOCK-A,MOCK-B", help="cluster label values present in Prometheus")
 args = ap.parse_args()
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-servers = args.servers.split(",")
+servers = args.clusters.split(",")
 ALL = "(" + "|".join(servers) + ")"
 total = errors = empty = 0
 for path in sorted(glob.glob(os.path.join(ROOT, "monitoring", "dashboards", "*.json")) + glob.glob(os.path.join(ROOT, "monitoring", "dashboards-html", "*.json"))):
     d = json.load(open(path))
-    single = any(v["name"] == "server" and not v.get("multi") for v in d["templating"]["list"])
+    single = any(v["name"] == "cluster" and not v.get("multi") for v in d["templating"]["list"])
     panels = []
     for p in d["panels"]:
         panels.append(p); panels += p.get("panels", [])
     print("==", d["title"], "(%d panels)" % len([p for p in panels if p["type"] != "row"]))
     for p in panels:
         for t in p.get("targets", []):
-            e = t["expr"].replace("$server", servers[0] if single else ALL).replace("$__all", ALL)
+            e = t["expr"].replace("$cluster", servers[0] if single else ALL).replace("$__all", ALL)
             e = re.sub(r"\$__(rate_)?interval", "5m", e).replace("$__range", "24h")
             total += 1
             try:

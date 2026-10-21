@@ -1,0 +1,1175 @@
+{
+  "title": "Cohesity Fleet",
+  "uid": "cohesity-fleet",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": [
+    "cohesity"
+  ],
+  "description": "One row per cluster; red rows need attention. Click a cluster name to open its Instance page.",
+  "links": [
+    {
+      "title": "Cohesity dashboards",
+      "type": "dashboards",
+      "tags": [
+        "cohesity"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Data source",
+        "current": {
+          "text": "Cohesity Prometheus",
+          "value": "cohesity-prometheus"
+        }
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(cohesity_up, cluster)",
+          "refId": "A"
+        },
+        "definition": "label_values(cohesity_up, cluster)",
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "refresh": 2,
+        "label": "Cluster"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "id": 1,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:center;gap:18px;height:48px;box-sizing:border-box;padding:0 18px;border-radius:6px;background:linear-gradient(90deg,#141A26 0%,#1E2738 100%);border-left:4px solid #3D71D9\"><!--logo--><div style=\"min-width:0;color:#8AB8FF;font-size:15px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\"><!--brand-->Cohesity monitoring<!--/brand--> &middot; <!--version-->v1.0.0<!--/version--></div></div>"
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 2,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 2
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Estate</span></div></div>"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Clusters",
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count(cohesity_up{cluster=~\"$cluster\"})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "API down",
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count(cohesity_up{cluster=~\"$cluster\"} == 0) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Failed checks",
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 6,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count(cohesity_check_success{cluster=~\"$cluster\"} == 0) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Groups failing",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count(cohesity_group_last_run_ok{cluster=~\"$cluster\"} == 0) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "SLA violations",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum(cohesity_group_last_run_sla_violated{cluster=~\"$cluster\"}) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Critical alerts open",
+      "id": 8,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 15,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum(cohesity_alerts_open{cluster=~\"$cluster\",severity=\"critical\"}) or vector(0)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Nodes out / disks offline",
+      "id": 9,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 18,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "(count(cohesity_node_in_cluster{cluster=~\"$cluster\"} == 0) or vector(0)) + (sum(cohesity_node_offline_disks{cluster=~\"$cluster\"}) or vector(0))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Collector last run",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 21,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "time() - cohesity_collector_last_run_timestamp_seconds"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 600
+              },
+              {
+                "color": "red",
+                "value": 900
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "description": "Time since the collector last completed a full run."
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 11,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Clusters</span></div></div>"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Fleet status",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "max by (cluster) (cohesity_up{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "sum by (cluster) (1 - cohesity_check_success{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "100 * max by (cluster) (cohesity_storage_used_bytes{cluster=~\"$cluster\"}) / max by (cluster) (cohesity_storage_capacity_bytes{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "max by (cluster) (cohesity_cluster_data_reduction_ratio{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "E",
+          "expr": "sum by (cluster) (1 - cohesity_group_last_run_ok{cluster=~\"$cluster\"}) or 0 * max by (cluster) (cohesity_up{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "F",
+          "expr": "sum by (cluster) (cohesity_group_last_run_sla_violated{cluster=~\"$cluster\"}) or 0 * max by (cluster) (cohesity_up{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "G",
+          "expr": "sum by (cluster) (cohesity_group_runs_24h{cluster=~\"$cluster\",status=\"failed\"}) or 0 * max by (cluster) (cohesity_up{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "H",
+          "expr": "max by (cluster) (cohesity_runs_active{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "I",
+          "expr": "sum by (cluster) (cohesity_alerts_open{cluster=~\"$cluster\",severity=\"critical\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "J",
+          "expr": "sum by (cluster) (cohesity_alerts_open{cluster=~\"$cluster\",severity=\"warning\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "K",
+          "expr": "(count by (cluster) (cohesity_node_in_cluster{cluster=~\"$cluster\"} == 0) or 0 * max by (cluster) (cohesity_up{cluster=~\"$cluster\"})) + (sum by (cluster) (cohesity_node_offline_disks{cluster=~\"$cluster\"}) or 0 * max by (cluster) (cohesity_up{cluster=~\"$cluster\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "L",
+          "expr": "max by (cluster) (cohesity_cluster_stopped_services{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "M",
+          "expr": "max by (cluster) (abs(cohesity_time_offset_seconds{cluster=~\"$cluster\"}))",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "N",
+          "expr": "max by (cluster, version) (cohesity_info{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Clock offset"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reduction"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "API"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Used %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cluster"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open instance",
+                    "url": "/d/cohesity-instance/cohesity-instance?var-cluster=${__data.fields.cluster}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "Value #N": true
+            },
+            "renameByName": {
+              "Value #A": "API",
+              "Value #B": "Failed checks",
+              "Value #C": "Used %",
+              "Value #D": "Reduction",
+              "Value #E": "Groups failing",
+              "Value #F": "SLA missed",
+              "Value #G": "Failed runs 24h",
+              "Value #H": "Running",
+              "Value #I": "Critical alerts",
+              "Value #J": "Warning alerts",
+              "Value #K": "Nodes/disks out",
+              "Value #L": "Stopped services",
+              "Value #M": "Clock offset"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6,
+              "Value #G": 7,
+              "Value #H": 8,
+              "Value #I": 9,
+              "Value #J": 10,
+              "Value #K": 11,
+              "Value #L": 12,
+              "Value #M": 13,
+              "version": 14
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Failed checks",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Used % is local storage used / total capacity (v2 cluster-storage). Reduction is the cluster data reduction ratio (N:1). Groups failing counts groups whose last backup run failed; SLA missed counts groups whose last run missed its SLA. Nodes/disks out adds nodes not in the cluster and offline disks."
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 13,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Trends</span></div></div>"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage used %",
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "100 * cohesity_storage_used_bytes{cluster=~\"$cluster\"} / cohesity_storage_capacity_bytes{cluster=~\"$cluster\"}",
+          "legendFormat": "{{cluster}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "percent",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cluster throughput (read + write)",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (cluster) (cohesity_cluster_throughput_bytes_per_second{cluster=~\"$cluster\"})",
+          "legendFormat": "{{cluster}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Backup runs in progress",
+      "id": 16,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_runs_active{cluster=~\"$cluster\"}",
+          "legendFormat": "{{cluster}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Open critical and warning alerts",
+      "id": 17,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (cluster) (cohesity_alerts_open{cluster=~\"$cluster\",severity=~\"critical|warning\"})",
+          "legendFormat": "{{cluster}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

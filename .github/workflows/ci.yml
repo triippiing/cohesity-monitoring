@@ -68,7 +68,7 @@ jobs:
           echo /tmp/prometheus >> "$GITHUB_PATH"
       - name: Start the mock Cohesity API
         run: |
-          setsid nohup python3 tools/test/mock_api.py 18080 > /tmp/mock.log 2>&1 &
+          setsid nohup python3 tools/test/mock_api.py 18080 18081 > /tmp/mock.log 2>&1 &
           for _ in $(seq 1 20); do
             if curl -s -o /dev/null --max-time 2 http://127.0.0.1:18080/; then exit 0; fi
             sleep 1
@@ -77,11 +77,9 @@ jobs:
           exit 1
       - name: Run the collector against the mock
         run: |
-          # The second run also records the reclamation run finishing (the mock reports it running
-          # for its first two status calls).
           for run in 1 2; do
             pwsh -NoProfile -File ./Export-CohesityMetrics.ps1 -ConfigPath tools/test/mock.config.json -All -NonInteractive -TextfileDirectory tools/test/out | tee /tmp/collector.out
-            grep -q '^Wrote .* samples for 2 server(s)' /tmp/collector.out
+            grep -q '^Wrote .* samples for 2 cluster(s)' /tmp/collector.out
           done
           # promtool exits 1 when the file does not parse and 3 when it only has lint notes. The
           # naming notes (the _total and _count names are kept on purpose) are not a failure; a

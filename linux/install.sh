@@ -12,8 +12,8 @@
 #   <root>/reports      CSV reports from the report scripts
 #   <root>/creds        credential files (mode 0700, owned by the service account)
 #   <root>/installers   drop the third-party tarballs here (linux/get-installers.sh fills it)
-#   <root>/state        collector state (event log bookmark, cached hourly checks)
-#   <root>/events       daily raw event log CSVs per appliance
+#   <root>/state        collector state (alert bookmark, run first-seen times, cached slower checks)
+#   <root>/events       daily raw alert CSVs per cluster
 #   <root>/node_exporter, prometheus, grafana
 #                       extracted from the tarballs in installers/ (Prometheus and Grafana unless
 #                       --collector-only); a newer tarball there is an upgrade, data/ is kept
@@ -82,7 +82,7 @@ usage: install.sh [--root DIR] [--user NAME] [--interval-minutes N] [--retention
                           runs Prometheus and Grafana (default: the full stack)
   --listen ADDR:PORT      address node_exporter serves the metrics on (default 127.0.0.1:9182;
                           0.0.0.0:9182 with --collector-only)
-  --skip-credentials      do not prompt for missing appliance credential files
+  --skip-credentials      do not prompt for missing cluster credential files
   --no-services           do not require or use systemd: write the files, start nothing
   --unit-dir DIR          folder the systemd unit files are written to
                           (default /etc/systemd/system; for tests and containers)
@@ -460,7 +460,7 @@ step_readable() {
 # ---------------------------------------------------------------------------
 # 6. Credential files
 # ---------------------------------------------------------------------------
-# Every appliance in the config needs its credential file (CredentialFile, relative paths resolve
+# Every cluster in the config needs its credential file (CredentialFile, relative paths resolve
 # against the install folder). A missing one is prompted for and saved as the service account, which
 # is the only account that can use it. The Servers list is read with the same module the collector
 # uses, so the paths are the ones it will look for.
@@ -500,7 +500,7 @@ step_credentials() {
             echo "warning: $name has no CredentialFile in the config; the collector will fail for it" >&2
             continue
         fi
-        # Appliances may share one credential file: ask for it once.
+        # Clusters may share one credential file: ask for it once.
         if [[ -n ${seen[$file]:-} ]]; then
             continue
         fi
@@ -940,7 +940,7 @@ print_next_steps() {
 Open Grafana at http://$host:3000 (first login admin / admin, you are asked to change the
 password), then Dashboards > Cohesity.
 
-Check the stack, and pause or resume collecting (for example during appliance maintenance):
+Check the stack, and pause or resume collecting (for example during cluster maintenance):
   sudo $ROOT/linux/cohesity-control.sh status
   sudo $ROOT/linux/cohesity-control.sh pause
   sudo $ROOT/linux/cohesity-control.sh resume

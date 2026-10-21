@@ -1,0 +1,2846 @@
+{
+  "title": "Cohesity Instance",
+  "uid": "cohesity-instance",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": [
+    "cohesity"
+  ],
+  "description": "Everything about one cluster. Pick the cluster at the top.",
+  "links": [
+    {
+      "title": "Cohesity dashboards",
+      "type": "dashboards",
+      "tags": [
+        "cohesity"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Data source",
+        "current": {
+          "text": "Cohesity Prometheus",
+          "value": "cohesity-prometheus"
+        }
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(cohesity_up, cluster)",
+          "refId": "A"
+        },
+        "definition": "label_values(cohesity_up, cluster)",
+        "includeAll": false,
+        "multi": false,
+        "sort": 1,
+        "refresh": 2,
+        "label": "Cluster"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "id": 1,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:center;gap:18px;height:48px;box-sizing:border-box;padding:0 18px;border-radius:6px;background:linear-gradient(90deg,#141A26 0%,#1E2738 100%);border-left:4px solid #3D71D9\"><!--logo--><div style=\"min-width:0;color:#8AB8FF;font-size:15px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\"><!--brand-->Cohesity monitoring<!--/brand--> &middot; <!--version-->v1.0.0<!--/version--></div></div>"
+      }
+    },
+    {
+      "type": "marcusolsson-dynamictext-panel",
+      "title": "",
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 2
+      },
+      "transparent": true,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "label_replace(cohesity_up{cluster=\"$cluster\"}, \"k\", \"0\", \"\", \"\") or label_replace(count(cohesity_check_success{cluster=\"$cluster\"} == 0) or vector(0), \"k\", \"1\", \"\", \"\") or label_replace(cohesity_cluster_nodes{cluster=\"$cluster\"}, \"k\", \"2\", \"\", \"\") or label_replace((count(cohesity_node_in_cluster{cluster=\"$cluster\"} == 0) or vector(0)) + (sum(cohesity_node_offline_disks{cluster=\"$cluster\"}) or vector(0)), \"k\", \"3\", \"\", \"\") or label_replace(cohesity_cluster_stopped_services{cluster=\"$cluster\"}, \"k\", \"4\", \"\", \"\") or label_replace(sum(cohesity_alerts_open{cluster=\"$cluster\",severity=\"critical\"}) or vector(0), \"k\", \"5\", \"\", \"\") or label_replace(cohesity_time_offset_seconds{cluster=\"$cluster\"}, \"k\", \"6\", \"\", \"\") or label_replace(time() - cohesity_check_last_success_timestamp_seconds{cluster=\"$cluster\",check=\"cluster\"}, \"k\", \"7\", \"\", \"\")",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": {
+        "renderMode": "allRows",
+        "content": "{{{cohesitySection data}}}",
+        "defaultContent": "<div class=\"ss-section\"><div class=\"ss-head\">Health</div><div class=\"ss ss-tiles\"><div class=\"ss-hero unknown\"><div class=\"ss-hero-title\">No data</div><div class=\"ss-hero-sub\">Prometheus returned nothing for this section.</div></div></div></div>",
+        "helpers": "const SECTION = {\"title\": \"Health\", \"tiles\": [{\"k\": \"0\", \"label\": \"API\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {\"1\": {\"text\": \"OK\", \"level\": \"ok\"}, \"0\": {\"text\": \"FAIL\", \"level\": \"critical\"}}, \"steps\": [[null, \"critical\"], [1, \"ok\"]]}, {\"k\": \"1\", \"label\": \"Failed checks\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"critical\"]]}, {\"k\": \"2\", \"label\": \"Nodes\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"3\", \"label\": \"Nodes out / disks offline\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"warning\"]]}, {\"k\": \"4\", \"label\": \"Stopped services\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"critical\"]]}, {\"k\": \"5\", \"label\": \"Critical alerts open\", \"unit\": null, \"decimals\": 0, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"critical\"]]}, {\"k\": \"6\", \"label\": \"Clock offset\", \"unit\": \"s\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [60, \"warning\"]]}, {\"k\": \"7\", \"label\": \"Collected\", \"unit\": \"s\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [600, \"warning\"], [900, \"critical\"]]}]};\nconst num = (row) => {\n  for (const key of Object.keys(row)) {\n    if (key.indexOf('Value') === 0) { return Number(row[key]); }\n  }\n  return NaN;\n};\nconst esc = (s) => String(s).replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[ch]);\nconst round = (v, d, auto) => v.toFixed(d !== null ? d : (Math.abs(v) >= auto || Number.isInteger(v) ? 0 : 1));\nconst pad = (n) => String(n).padStart(2, '0');\nconst fmt = (v, t) => {\n  if (!isFinite(v)) { return 'No data'; }\n  switch (t.unit) {\n    case 'percent': return round(v, t.decimals, 100) + '%';\n    case 'bytes': {\n      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];\n      let i = 0;\n      while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }\n      return round(v, t.decimals, 100) + ' ' + units[i];\n    }\n    case 's': {\n      const a = Math.abs(v);\n      if (a < 90) { return round(v, t.decimals, 10) + ' s'; }\n      if (a < 5400) { return (v / 60).toFixed(1) + ' min'; }\n      if (a < 172800) { return (v / 3600).toFixed(1) + ' h'; }\n      return (v / 86400).toFixed(1) + ' days';\n    }\n    case 'd': return round(v, t.decimals, 10) + ' days';\n    case 'dateTimeAsIso': {\n      const d = new Date(v);\n      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());\n    }\n    default: return round(v, t.decimals, 100);\n  }\n};\nconst level = (v, t) => {\n  if (!isFinite(v)) { return 'unknown'; }\n  let lv = 'info';\n  t.steps.forEach((st) => { if (st[0] === null || v >= st[0]) { lv = st[1]; } });\n  return lv;\n};\nconst show = (row, t) => {\n  const v = num(row);\n  const m = t.maps[String(v)];\n  if (m) { return { text: m.text, level: m.level }; }\n  const text = t.legend ? t.legend.replace(/\\{\\{\\s*(\\w+)\\s*\\}\\}/g, (all, name) => (row[name] === undefined ? '' : row[name])).trim() : fmt(v, t);\n  return { text: text, level: level(v, t) };\n};\nconst WORD = { ok: 'OK', warning: 'Check', critical: 'Action', info: 'Info', unknown: 'No data' };\ncontext.handlebars.registerHelper('cohesitySection', (rows) => {\n  const tiles = SECTION.tiles.map((t) => {\n    const mine = (rows || []).filter((row) => row.k === t.k);\n    let body;\n    let lv = 'unknown';\n    if (mine.length > 1 || (t.list && mine.length)) {\n      // A count per version and the like: one line per series with its count, the tile coloured by the first.\n      lv = show(mine[0], t).level;\n      body = '<div class=\"ss-list\">' + mine.map((row) => '<div><span>' + esc(show(row, t).text) + '</span><b>' + esc(fmt(num(row), Object.assign({}, t, { unit: null }))) + '</b></div>').join('') + '</div>';\n    } else {\n      const r = mine.length ? show(mine[0], t) : { text: 'No data', level: 'unknown' };\n      lv = r.level;\n      body = '<div class=\"ss-value' + (r.text.length > 10 ? ' ss-long' : '') + '\" title=\"' + esc(r.text) + '\">' + esc(r.text) + '</div>';\n    }\n    return '<div class=\"ss-card ' + lv + '\"><div class=\"ss-label\" title=\"' + esc(t.label) + '\">' + esc(t.label) + '</div>' + body +\n      '<div class=\"ss-pill\">' + WORD[lv] + '</div></div>';\n  }).join('');\n  return new context.handlebars.SafeString('<div class=\"ss-section\"><div class=\"ss-head\">' + esc(SECTION.title) + '</div>' +\n    '<div class=\"ss ss-tiles\" style=\"grid-template-columns: repeat(' + SECTION.tiles.length + ', minmax(0, 1fr))\">' + tiles + '</div></div>');\n});\n",
+        "styles": ".ss-section { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; border-radius: 18px; overflow: hidden;\n  background: #141A26; border: 1px solid #1E2738; }\n.ss-head { flex: none; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 18px; border-radius: 18px;\n  background: linear-gradient(90deg, #1E2738 0%, #141A26 100%); color: #8AB8FF; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }\n.ss { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(140px, 1fr)); grid-auto-rows: 1fr; gap: 10px; padding: 10px 12px 12px; }\n.ss-hero { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 16px 20px; border-radius: 14px;\n  background: linear-gradient(135deg, #141A26 0%, #1E2738 100%); border-left: 4px solid #3D71D9; }\n.ss-mark { width: 44px; height: 44px; border-radius: 50%; border: 3px solid currentColor; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }\n.ss-hero-title { font-size: 22px; font-weight: 700; line-height: 1.2; }\n.ss-hero-sub { color: #A3ACB9; font-size: 13px; }\n.ss-card { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 0; padding: 10px 14px; border-radius: 14px;\n  background: #1E2738; border-top: 3px solid #5794F2; }\n.ss-label { color: #8AB8FF; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value { color: #FFFFFF; font-size: 32px; font-weight: 700; line-height: 1.1; }\n.ss-pill { align-self: flex-start; padding: 2px 9px; border-radius: 10px; color: #FFFFFF; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }\n.ss-hero.ok { color: #73BF69; } .ss-hero.warning { color: #FF9830; } .ss-hero.critical { color: #F2495C; } .ss-hero.unknown { color: #A3ACB9; }\n.ss-hero .ss-hero-title { color: #FFFFFF; }\n.ss-card.ok { border-top-color: #73BF69; } .ss-card.ok .ss-pill { background: #73BF69; }\n.ss-card.info .ss-pill { background: #5794F2; }\n.ss-card.warning { border-top-color: #FF9830; background: linear-gradient(180deg, #FF983040 0%, #1E2738 70%); } .ss-card.warning .ss-pill { background: #FF9830; }\n.ss-card.critical { border-top-color: #F2495C; background: linear-gradient(180deg, #F2495C40 0%, #1E2738 70%); } .ss-card.critical .ss-pill { background: #F2495C; }\n.ss-card.unknown { border-top-color: #A3ACB9; } .ss-card.unknown .ss-pill { background: #A3ACB9; color: #141A26; }\n.ss.ss-tiles { grid-auto-rows: auto; grid-template-rows: 1fr; }\n.ss-tiles .ss-hero { grid-row: auto; grid-column: 1 / -1; }\n.ss-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value.ss-long { font-size: 20px; line-height: 1.2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }\n.ss-list { display: flex; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 600; color: #FFFFFF; overflow: hidden; }\n.ss-list div { display: flex; justify-content: space-between; gap: 8px; } .ss-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n",
+        "wrap": false,
+        "editors": [
+          "helpers",
+          "styles"
+        ],
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "contentPartials": [],
+        "externalStyles": [],
+        "afterRender": "",
+        "status": ""
+      },
+      "description": "Collected: Time since this cluster was last collected."
+    },
+    {
+      "type": "table",
+      "title": "Cluster",
+      "id": 2,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_cluster_encryption_enabled{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "cohesity_cluster_services_synced{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "cohesity_cluster_operation{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Encryption"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Services synced"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "Value #A": true,
+              "Value #D": true
+            },
+            "renameByName": {
+              "Value #B": "Encryption",
+              "Value #C": "Services synced"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "name": 1,
+              "id": 2,
+              "version": 3,
+              "patch": 4,
+              "type": 5,
+              "deployment": 6,
+              "operation": 7,
+              "Value #B": 8,
+              "Value #C": 9
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "marcusolsson-dynamictext-panel",
+      "title": "",
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "transparent": true,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "label_replace(100 * cohesity_storage_used_bytes{cluster=\"$cluster\"} / cohesity_storage_capacity_bytes{cluster=\"$cluster\"}, \"k\", \"0\", \"\", \"\") or label_replace(cohesity_storage_available_bytes{cluster=\"$cluster\"}, \"k\", \"1\", \"\", \"\") or label_replace(cohesity_storage_available_bytes{cluster=\"$cluster\"} / clamp_min(deriv(cohesity_storage_used_bytes{cluster=\"$cluster\"}[30d:1h]), 1) / 86400, \"k\", \"2\", \"\", \"\") or label_replace(cohesity_cluster_data_reduction_ratio{cluster=\"$cluster\"}, \"k\", \"3\", \"\", \"\") or label_replace(cohesity_storage_capacity_bytes{cluster=\"$cluster\"}, \"k\", \"4\", \"\", \"\") or label_replace(cohesity_cluster_usable_capacity_bytes{cluster=\"$cluster\"}, \"k\", \"5\", \"\", \"\")",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": {
+        "renderMode": "allRows",
+        "content": "{{{cohesitySection data}}}",
+        "defaultContent": "<div class=\"ss-section\"><div class=\"ss-head\">Capacity</div><div class=\"ss ss-tiles\"><div class=\"ss-hero unknown\"><div class=\"ss-hero-title\">No data</div><div class=\"ss-hero-sub\">Prometheus returned nothing for this section.</div></div></div></div>",
+        "helpers": "const SECTION = {\"title\": \"Capacity\", \"tiles\": [{\"k\": \"0\", \"label\": \"Used\", \"unit\": \"percent\", \"decimals\": 1, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [80, \"warning\"], [90, \"critical\"]]}, {\"k\": \"1\", \"label\": \"Available\", \"unit\": \"bytes\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"2\", \"label\": \"Days until full (30d trend)\", \"unit\": \"d\", \"decimals\": 0, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"critical\"], [30, \"warning\"], [90, \"ok\"]]}, {\"k\": \"3\", \"label\": \"Data reduction\", \"unit\": null, \"decimals\": 1, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"4\", \"label\": \"Capacity\", \"unit\": \"bytes\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"5\", \"label\": \"Usable after resiliency\", \"unit\": \"bytes\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}]};\nconst num = (row) => {\n  for (const key of Object.keys(row)) {\n    if (key.indexOf('Value') === 0) { return Number(row[key]); }\n  }\n  return NaN;\n};\nconst esc = (s) => String(s).replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[ch]);\nconst round = (v, d, auto) => v.toFixed(d !== null ? d : (Math.abs(v) >= auto || Number.isInteger(v) ? 0 : 1));\nconst pad = (n) => String(n).padStart(2, '0');\nconst fmt = (v, t) => {\n  if (!isFinite(v)) { return 'No data'; }\n  switch (t.unit) {\n    case 'percent': return round(v, t.decimals, 100) + '%';\n    case 'bytes': {\n      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];\n      let i = 0;\n      while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }\n      return round(v, t.decimals, 100) + ' ' + units[i];\n    }\n    case 's': {\n      const a = Math.abs(v);\n      if (a < 90) { return round(v, t.decimals, 10) + ' s'; }\n      if (a < 5400) { return (v / 60).toFixed(1) + ' min'; }\n      if (a < 172800) { return (v / 3600).toFixed(1) + ' h'; }\n      return (v / 86400).toFixed(1) + ' days';\n    }\n    case 'd': return round(v, t.decimals, 10) + ' days';\n    case 'dateTimeAsIso': {\n      const d = new Date(v);\n      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());\n    }\n    default: return round(v, t.decimals, 100);\n  }\n};\nconst level = (v, t) => {\n  if (!isFinite(v)) { return 'unknown'; }\n  let lv = 'info';\n  t.steps.forEach((st) => { if (st[0] === null || v >= st[0]) { lv = st[1]; } });\n  return lv;\n};\nconst show = (row, t) => {\n  const v = num(row);\n  const m = t.maps[String(v)];\n  if (m) { return { text: m.text, level: m.level }; }\n  const text = t.legend ? t.legend.replace(/\\{\\{\\s*(\\w+)\\s*\\}\\}/g, (all, name) => (row[name] === undefined ? '' : row[name])).trim() : fmt(v, t);\n  return { text: text, level: level(v, t) };\n};\nconst WORD = { ok: 'OK', warning: 'Check', critical: 'Action', info: 'Info', unknown: 'No data' };\ncontext.handlebars.registerHelper('cohesitySection', (rows) => {\n  const tiles = SECTION.tiles.map((t) => {\n    const mine = (rows || []).filter((row) => row.k === t.k);\n    let body;\n    let lv = 'unknown';\n    if (mine.length > 1 || (t.list && mine.length)) {\n      // A count per version and the like: one line per series with its count, the tile coloured by the first.\n      lv = show(mine[0], t).level;\n      body = '<div class=\"ss-list\">' + mine.map((row) => '<div><span>' + esc(show(row, t).text) + '</span><b>' + esc(fmt(num(row), Object.assign({}, t, { unit: null }))) + '</b></div>').join('') + '</div>';\n    } else {\n      const r = mine.length ? show(mine[0], t) : { text: 'No data', level: 'unknown' };\n      lv = r.level;\n      body = '<div class=\"ss-value' + (r.text.length > 10 ? ' ss-long' : '') + '\" title=\"' + esc(r.text) + '\">' + esc(r.text) + '</div>';\n    }\n    return '<div class=\"ss-card ' + lv + '\"><div class=\"ss-label\" title=\"' + esc(t.label) + '\">' + esc(t.label) + '</div>' + body +\n      '<div class=\"ss-pill\">' + WORD[lv] + '</div></div>';\n  }).join('');\n  return new context.handlebars.SafeString('<div class=\"ss-section\"><div class=\"ss-head\">' + esc(SECTION.title) + '</div>' +\n    '<div class=\"ss ss-tiles\" style=\"grid-template-columns: repeat(' + SECTION.tiles.length + ', minmax(0, 1fr))\">' + tiles + '</div></div>');\n});\n",
+        "styles": ".ss-section { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; border-radius: 18px; overflow: hidden;\n  background: #141A26; border: 1px solid #1E2738; }\n.ss-head { flex: none; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 18px; border-radius: 18px;\n  background: linear-gradient(90deg, #1E2738 0%, #141A26 100%); color: #8AB8FF; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }\n.ss { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(140px, 1fr)); grid-auto-rows: 1fr; gap: 10px; padding: 10px 12px 12px; }\n.ss-hero { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 16px 20px; border-radius: 14px;\n  background: linear-gradient(135deg, #141A26 0%, #1E2738 100%); border-left: 4px solid #3D71D9; }\n.ss-mark { width: 44px; height: 44px; border-radius: 50%; border: 3px solid currentColor; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }\n.ss-hero-title { font-size: 22px; font-weight: 700; line-height: 1.2; }\n.ss-hero-sub { color: #A3ACB9; font-size: 13px; }\n.ss-card { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 0; padding: 10px 14px; border-radius: 14px;\n  background: #1E2738; border-top: 3px solid #5794F2; }\n.ss-label { color: #8AB8FF; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value { color: #FFFFFF; font-size: 32px; font-weight: 700; line-height: 1.1; }\n.ss-pill { align-self: flex-start; padding: 2px 9px; border-radius: 10px; color: #FFFFFF; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }\n.ss-hero.ok { color: #73BF69; } .ss-hero.warning { color: #FF9830; } .ss-hero.critical { color: #F2495C; } .ss-hero.unknown { color: #A3ACB9; }\n.ss-hero .ss-hero-title { color: #FFFFFF; }\n.ss-card.ok { border-top-color: #73BF69; } .ss-card.ok .ss-pill { background: #73BF69; }\n.ss-card.info .ss-pill { background: #5794F2; }\n.ss-card.warning { border-top-color: #FF9830; background: linear-gradient(180deg, #FF983040 0%, #1E2738 70%); } .ss-card.warning .ss-pill { background: #FF9830; }\n.ss-card.critical { border-top-color: #F2495C; background: linear-gradient(180deg, #F2495C40 0%, #1E2738 70%); } .ss-card.critical .ss-pill { background: #F2495C; }\n.ss-card.unknown { border-top-color: #A3ACB9; } .ss-card.unknown .ss-pill { background: #A3ACB9; color: #141A26; }\n.ss.ss-tiles { grid-auto-rows: auto; grid-template-rows: 1fr; }\n.ss-tiles .ss-hero { grid-row: auto; grid-column: 1 / -1; }\n.ss-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value.ss-long { font-size: 20px; line-height: 1.2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }\n.ss-list { display: flex; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 600; color: #FFFFFF; overflow: hidden; }\n.ss-list div { display: flex; justify-content: space-between; gap: 8px; } .ss-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n",
+        "wrap": false,
+        "editors": [
+          "helpers",
+          "styles"
+        ],
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "contentPartials": [],
+        "externalStyles": [],
+        "afterRender": "",
+        "status": ""
+      },
+      "description": "Days until full (30d trend): Available space divided by the 30-day growth rate. Shows a very large number while usage is flat or falling; needs several days of data to settle. Data reduction: Logical data in / physical data written (N:1). Usable after resiliency: Minimum usable capacity after erasure coding or replication factor."
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage used",
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_storage_used_bytes{cluster=\"$cluster\"}",
+          "legendFormat": "used"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_storage_capacity_bytes{cluster=\"$cluster\"}",
+          "legendFormat": "capacity"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Used by service",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_storage_service_bytes{cluster=\"$cluster\",kind=\"physical\"}",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Storage domains",
+      "id": 7,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_storage_domain_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "max by (cluster, domain) (cohesity_storage_domain_bytes{cluster=\"$cluster\",kind=\"local_physical\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "max by (cluster, domain) (cohesity_storage_domain_bytes{cluster=\"$cluster\",kind=\"logical\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "max by (cluster, domain) (cohesity_storage_domain_bytes{cluster=\"$cluster\",kind=\"data_in\"}) / max by (cluster, domain) (cohesity_storage_domain_bytes{cluster=\"$cluster\",kind=\"data_written\"} > 0)",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "E",
+          "expr": "cohesity_storage_domain_quota_bytes{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "F",
+          "expr": "cohesity_storage_domain_files{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Physical used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Logical"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Quota"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reduction"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "domain_id": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "Physical used",
+              "Value #C": "Logical",
+              "Value #D": "Reduction",
+              "Value #E": "Quota",
+              "Value #F": "Files"
+            },
+            "indexByName": {
+              "domain": 0,
+              "Value #B": 1,
+              "Value #C": 2,
+              "Value #D": 3,
+              "Value #E": 4,
+              "Value #F": 5,
+              "partition": 6,
+              "encryption": 7,
+              "node_failures_tolerated": 8,
+              "disk_failures_tolerated": 9
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 9,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Performance</span></div></div>"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput",
+      "id": 8,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_cluster_throughput_bytes_per_second{cluster=\"$cluster\"}",
+          "legendFormat": "{{op}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "IOPS",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_cluster_iops{cluster=\"$cluster\"}",
+          "legendFormat": "{{op}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "iops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency",
+      "id": 11,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_cluster_latency_seconds{cluster=\"$cluster\"}",
+          "legendFormat": "{{op}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "marcusolsson-dynamictext-panel",
+      "title": "",
+      "id": 13,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "transparent": true,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "label_replace(count(cohesity_group_info{cluster=\"$cluster\"}) or vector(0), \"k\", \"0\", \"\", \"\") or label_replace(count(cohesity_group_last_run_ok{cluster=\"$cluster\"} == 0) or vector(0), \"k\", \"1\", \"\", \"\") or label_replace(sum(cohesity_group_last_run_sla_violated{cluster=\"$cluster\"}) or vector(0), \"k\", \"2\", \"\", \"\") or label_replace(sum(cohesity_group_paused{cluster=\"$cluster\"}) or vector(0), \"k\", \"3\", \"\", \"\") or label_replace(cohesity_runs_active{cluster=\"$cluster\"}, \"k\", \"4\", \"\", \"\") or label_replace(cohesity_objects{cluster=\"$cluster\",protected=\"no\"}, \"k\", \"5\", \"\", \"\")",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": {
+        "renderMode": "allRows",
+        "content": "{{{cohesitySection data}}}",
+        "defaultContent": "<div class=\"ss-section\"><div class=\"ss-head\">Protection</div><div class=\"ss ss-tiles\"><div class=\"ss-hero unknown\"><div class=\"ss-hero-title\">No data</div><div class=\"ss-hero-sub\">Prometheus returned nothing for this section.</div></div></div></div>",
+        "helpers": "const SECTION = {\"title\": \"Protection\", \"tiles\": [{\"k\": \"0\", \"label\": \"Protection groups\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"1\", \"label\": \"Last run failed\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"critical\"]]}, {\"k\": \"2\", \"label\": \"Last run missed SLA\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"warning\"]]}, {\"k\": \"3\", \"label\": \"Paused groups\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"warning\"]]}, {\"k\": \"4\", \"label\": \"Runs in progress\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"5\", \"label\": \"Unprotected objects\", \"unit\": null, \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"warning\"]]}]};\nconst num = (row) => {\n  for (const key of Object.keys(row)) {\n    if (key.indexOf('Value') === 0) { return Number(row[key]); }\n  }\n  return NaN;\n};\nconst esc = (s) => String(s).replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[ch]);\nconst round = (v, d, auto) => v.toFixed(d !== null ? d : (Math.abs(v) >= auto || Number.isInteger(v) ? 0 : 1));\nconst pad = (n) => String(n).padStart(2, '0');\nconst fmt = (v, t) => {\n  if (!isFinite(v)) { return 'No data'; }\n  switch (t.unit) {\n    case 'percent': return round(v, t.decimals, 100) + '%';\n    case 'bytes': {\n      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];\n      let i = 0;\n      while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }\n      return round(v, t.decimals, 100) + ' ' + units[i];\n    }\n    case 's': {\n      const a = Math.abs(v);\n      if (a < 90) { return round(v, t.decimals, 10) + ' s'; }\n      if (a < 5400) { return (v / 60).toFixed(1) + ' min'; }\n      if (a < 172800) { return (v / 3600).toFixed(1) + ' h'; }\n      return (v / 86400).toFixed(1) + ' days';\n    }\n    case 'd': return round(v, t.decimals, 10) + ' days';\n    case 'dateTimeAsIso': {\n      const d = new Date(v);\n      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());\n    }\n    default: return round(v, t.decimals, 100);\n  }\n};\nconst level = (v, t) => {\n  if (!isFinite(v)) { return 'unknown'; }\n  let lv = 'info';\n  t.steps.forEach((st) => { if (st[0] === null || v >= st[0]) { lv = st[1]; } });\n  return lv;\n};\nconst show = (row, t) => {\n  const v = num(row);\n  const m = t.maps[String(v)];\n  if (m) { return { text: m.text, level: m.level }; }\n  const text = t.legend ? t.legend.replace(/\\{\\{\\s*(\\w+)\\s*\\}\\}/g, (all, name) => (row[name] === undefined ? '' : row[name])).trim() : fmt(v, t);\n  return { text: text, level: level(v, t) };\n};\nconst WORD = { ok: 'OK', warning: 'Check', critical: 'Action', info: 'Info', unknown: 'No data' };\ncontext.handlebars.registerHelper('cohesitySection', (rows) => {\n  const tiles = SECTION.tiles.map((t) => {\n    const mine = (rows || []).filter((row) => row.k === t.k);\n    let body;\n    let lv = 'unknown';\n    if (mine.length > 1 || (t.list && mine.length)) {\n      // A count per version and the like: one line per series with its count, the tile coloured by the first.\n      lv = show(mine[0], t).level;\n      body = '<div class=\"ss-list\">' + mine.map((row) => '<div><span>' + esc(show(row, t).text) + '</span><b>' + esc(fmt(num(row), Object.assign({}, t, { unit: null }))) + '</b></div>').join('') + '</div>';\n    } else {\n      const r = mine.length ? show(mine[0], t) : { text: 'No data', level: 'unknown' };\n      lv = r.level;\n      body = '<div class=\"ss-value' + (r.text.length > 10 ? ' ss-long' : '') + '\" title=\"' + esc(r.text) + '\">' + esc(r.text) + '</div>';\n    }\n    return '<div class=\"ss-card ' + lv + '\"><div class=\"ss-label\" title=\"' + esc(t.label) + '\">' + esc(t.label) + '</div>' + body +\n      '<div class=\"ss-pill\">' + WORD[lv] + '</div></div>';\n  }).join('');\n  return new context.handlebars.SafeString('<div class=\"ss-section\"><div class=\"ss-head\">' + esc(SECTION.title) + '</div>' +\n    '<div class=\"ss ss-tiles\" style=\"grid-template-columns: repeat(' + SECTION.tiles.length + ', minmax(0, 1fr))\">' + tiles + '</div></div>');\n});\n",
+        "styles": ".ss-section { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; border-radius: 18px; overflow: hidden;\n  background: #141A26; border: 1px solid #1E2738; }\n.ss-head { flex: none; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 18px; border-radius: 18px;\n  background: linear-gradient(90deg, #1E2738 0%, #141A26 100%); color: #8AB8FF; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }\n.ss { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(140px, 1fr)); grid-auto-rows: 1fr; gap: 10px; padding: 10px 12px 12px; }\n.ss-hero { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 16px 20px; border-radius: 14px;\n  background: linear-gradient(135deg, #141A26 0%, #1E2738 100%); border-left: 4px solid #3D71D9; }\n.ss-mark { width: 44px; height: 44px; border-radius: 50%; border: 3px solid currentColor; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }\n.ss-hero-title { font-size: 22px; font-weight: 700; line-height: 1.2; }\n.ss-hero-sub { color: #A3ACB9; font-size: 13px; }\n.ss-card { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 0; padding: 10px 14px; border-radius: 14px;\n  background: #1E2738; border-top: 3px solid #5794F2; }\n.ss-label { color: #8AB8FF; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value { color: #FFFFFF; font-size: 32px; font-weight: 700; line-height: 1.1; }\n.ss-pill { align-self: flex-start; padding: 2px 9px; border-radius: 10px; color: #FFFFFF; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }\n.ss-hero.ok { color: #73BF69; } .ss-hero.warning { color: #FF9830; } .ss-hero.critical { color: #F2495C; } .ss-hero.unknown { color: #A3ACB9; }\n.ss-hero .ss-hero-title { color: #FFFFFF; }\n.ss-card.ok { border-top-color: #73BF69; } .ss-card.ok .ss-pill { background: #73BF69; }\n.ss-card.info .ss-pill { background: #5794F2; }\n.ss-card.warning { border-top-color: #FF9830; background: linear-gradient(180deg, #FF983040 0%, #1E2738 70%); } .ss-card.warning .ss-pill { background: #FF9830; }\n.ss-card.critical { border-top-color: #F2495C; background: linear-gradient(180deg, #F2495C40 0%, #1E2738 70%); } .ss-card.critical .ss-pill { background: #F2495C; }\n.ss-card.unknown { border-top-color: #A3ACB9; } .ss-card.unknown .ss-pill { background: #A3ACB9; color: #141A26; }\n.ss.ss-tiles { grid-auto-rows: auto; grid-template-rows: 1fr; }\n.ss-tiles .ss-hero { grid-row: auto; grid-column: 1 / -1; }\n.ss-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value.ss-long { font-size: 20px; line-height: 1.2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }\n.ss-list { display: flex; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 600; color: #FFFFFF; overflow: hidden; }\n.ss-list div { display: flex; justify-content: space-between; gap: 8px; } .ss-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n",
+        "wrap": false,
+        "editors": [
+          "helpers",
+          "styles"
+        ],
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "contentPartials": [],
+        "externalStyles": [],
+        "afterRender": "",
+        "status": ""
+      },
+      "description": "Unprotected objects: Objects on registered sources that no protection group covers."
+    },
+    {
+      "type": "table",
+      "title": "Protection groups",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_group_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "max by (cluster, group, status) (cohesity_group_last_run_status{cluster=\"$cluster\"} == 1)",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "cohesity_group_last_run_end_timestamp_seconds{cluster=\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "cohesity_group_last_run_duration_seconds{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "E",
+          "expr": "max by (cluster, group) (cohesity_group_last_run_objects{cluster=\"$cluster\",result=\"failed\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "F",
+          "expr": "cohesity_group_last_run_written_bytes{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "G",
+          "expr": "cohesity_group_last_run_sla_violated{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "H",
+          "expr": "cohesity_group_paused{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "I",
+          "expr": "cohesity_group_protected_objects{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last run ended"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Written"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "group_id": true,
+              "Value #A": true,
+              "Value #B": true
+            },
+            "renameByName": {
+              "Value #C": "Last run ended",
+              "Value #D": "Duration",
+              "Value #E": "Failed objects",
+              "Value #F": "Written",
+              "Value #G": "SLA missed",
+              "Value #H": "Paused",
+              "Value #I": "Objects"
+            },
+            "indexByName": {
+              "group": 0,
+              "env": 1,
+              "policy": 2,
+              "status": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #I": 6,
+              "Value #E": 7,
+              "Value #F": 8,
+              "Value #G": 9,
+              "Value #H": 10,
+              "domain": 11,
+              "priority": 12
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "status",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Status is the last backup run's (a running run shows running). The full run history is in the cluster UI."
+    },
+    {
+      "type": "table",
+      "title": "Failed objects (last run of failed or warned groups)",
+      "id": 14,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_failed_object_info{cluster=\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "When"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "result"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true
+            },
+            "renameByName": {
+              "Value": "When"
+            },
+            "indexByName": {
+              "Value": 0,
+              "group": 1,
+              "object": 2,
+              "env": 3,
+              "source": 4,
+              "result": 5,
+              "attempts": 6,
+              "message": 7
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "When",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Capped at 200 objects across 20 groups per collector run. Get-CohesityFailedObjects.ps1 lists them all as CSV."
+    },
+    {
+      "type": "table",
+      "title": "Replication and archive targets (last run)",
+      "id": 15,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "label_replace(cohesity_replication_last_status{cluster=\"$cluster\"}, \"task\", \"replication\", \"\", \"\") or label_replace(cohesity_archive_last_status{cluster=\"$cluster\"}, \"task\", \"archive\", \"\", \"\")",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "target_type": true,
+              "Value": true
+            },
+            "renameByName": {},
+            "indexByName": {
+              "task": 0,
+              "group": 1,
+              "target": 2,
+              "status": 3
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "status",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Runs started in the last 24 hours, by status",
+      "id": 16,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 68
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (status) (cohesity_group_runs_24h{cluster=\"$cluster\"})",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 18,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 76
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Nodes</span></div></div>"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Nodes",
+      "id": 17,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_node_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "100 * cohesity_node_used_bytes{cluster=\"$cluster\"} / cohesity_node_capacity_bytes{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "cohesity_node_capacity_bytes{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "cohesity_node_offline_disks{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "E",
+          "expr": "max by (cluster, node, state) (cohesity_node_removal{cluster=\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Capacity"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Used %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "node_id": true,
+              "Value #A": true,
+              "Value #E": true
+            },
+            "renameByName": {
+              "Value #B": "Used %",
+              "Value #C": "Capacity",
+              "Value #D": "Offline disks"
+            },
+            "indexByName": {
+              "node": 0,
+              "ip": 1,
+              "model": 2,
+              "hardware": 3,
+              "serial": 4,
+              "version": 5,
+              "Value #B": 6,
+              "Value #C": 7,
+              "Value #D": 8,
+              "state": 9,
+              "type": 10
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 20,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Sources, targets and licence</span></div></div>"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Registered sources",
+      "id": 19,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 87
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_source_status{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_source_last_refresh_timestamp_seconds{cluster=\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last refresh"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "Last refresh"
+            },
+            "indexByName": {
+              "source": 0,
+              "env": 1,
+              "status": 2,
+              "Value #B": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Objects by environment",
+      "id": 21,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 87
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_objects_by_env{cluster=\"$cluster\",protected=\"yes\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_objects_by_env{cluster=\"$cluster\",protected=\"no\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "protected": true
+            },
+            "renameByName": {
+              "Value #A": "Protected",
+              "Value #B": "Unprotected"
+            },
+            "indexByName": {
+              "env": 0,
+              "Value #A": 1,
+              "Value #B": 2
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Unprotected",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Archive targets",
+      "id": 22,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 87
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_external_target_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "max by (cluster, target) (cohesity_vault_usage_bytes{cluster=\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Stored"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "target_id": true,
+              "ownership": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "Stored"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Remote clusters",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 0,
+        "y": 95
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_remote_cluster_info{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_remote_cluster_tls_enabled{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "TLS"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true,
+              "remote_id": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "TLS"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Licence",
+      "id": 24,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 8,
+        "y": 95
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_license_entitled_gib{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_license_used_gib{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "(cohesity_license_expiry_timestamp_seconds{cluster=\"$cluster\"} - time()) / 86400",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Days to expiry"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "d"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true
+            },
+            "renameByName": {
+              "Value #A": "Entitled GiB",
+              "Value #B": "Used GiB",
+              "Value #C": "Days to expiry"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "SmartFiles views",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 8,
+        "x": 16,
+        "y": 95
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_views{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true
+            },
+            "renameByName": {
+              "Value": "Views"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 27,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 101
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Alerts</span></div></div>"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "New alerts per hour by severity",
+      "id": 26,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 103
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "sum by (severity) (increase(cohesity_alerts_total{cluster=\"$cluster\"}[1h]))",
+          "legendFormat": "{{severity}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            },
+            "drawStyle": "bars"
+          },
+          "unit": "none",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "Open critical and warning alerts",
+      "id": 28,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_alert_recent{cluster=\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Latest"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "severity"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*",
+                      "result": {
+                        "color": "red"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*",
+                      "result": {
+                        "color": "orange"
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$",
+                      "result": {
+                        "color": "green"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true
+            },
+            "renameByName": {
+              "Value": "Latest"
+            },
+            "indexByName": {
+              "Value": 0,
+              "severity": 1,
+              "category": 2,
+              "name": 3,
+              "message": 4,
+              "occurrences": 5,
+              "code": 6,
+              "id": 7
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Latest",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "description": "The 20 newest open critical and warning alerts. Every new alert, info included, is archived daily under events\\ on the monitoring host."
+    },
+    {
+      "type": "marcusolsson-dynamictext-panel",
+      "title": "",
+      "id": 30,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 119
+      },
+      "transparent": true,
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "label_replace(cohesity_collector_info, \"k\", \"0\", \"\", \"\") or label_replace(cohesity_collector_last_run_timestamp_seconds * 1000, \"k\", \"1\", \"\", \"\") or label_replace(count(cohesity_check_success{cluster=\"$cluster\"} == 0) or vector(0), \"k\", \"2\", \"\", \"\") or label_replace(cohesity_collect_duration_seconds{cluster=\"$cluster\"}, \"k\", \"3\", \"\", \"\")",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "options": {
+        "renderMode": "allRows",
+        "content": "{{{cohesitySection data}}}",
+        "defaultContent": "<div class=\"ss-section\"><div class=\"ss-head\">Collector</div><div class=\"ss ss-tiles\"><div class=\"ss-hero unknown\"><div class=\"ss-hero-title\">No data</div><div class=\"ss-hero-sub\">Prometheus returned nothing for this section.</div></div></div></div>",
+        "helpers": "const SECTION = {\"title\": \"Collector\", \"tiles\": [{\"k\": \"0\", \"label\": \"Package version\", \"unit\": null, \"decimals\": null, \"legend\": \"{{version}}\", \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"1\", \"label\": \"Last collector run\", \"unit\": \"dateTimeAsIso\", \"decimals\": null, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}, {\"k\": \"2\", \"label\": \"Checks failing\", \"unit\": null, \"decimals\": 0, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"ok\"], [1, \"critical\"]]}, {\"k\": \"3\", \"label\": \"Collection time\", \"unit\": \"s\", \"decimals\": 1, \"legend\": null, \"list\": false, \"maps\": {}, \"steps\": [[null, \"info\"]]}]};\nconst num = (row) => {\n  for (const key of Object.keys(row)) {\n    if (key.indexOf('Value') === 0) { return Number(row[key]); }\n  }\n  return NaN;\n};\nconst esc = (s) => String(s).replace(/[&<>\"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;' })[ch]);\nconst round = (v, d, auto) => v.toFixed(d !== null ? d : (Math.abs(v) >= auto || Number.isInteger(v) ? 0 : 1));\nconst pad = (n) => String(n).padStart(2, '0');\nconst fmt = (v, t) => {\n  if (!isFinite(v)) { return 'No data'; }\n  switch (t.unit) {\n    case 'percent': return round(v, t.decimals, 100) + '%';\n    case 'bytes': {\n      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];\n      let i = 0;\n      while (Math.abs(v) >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }\n      return round(v, t.decimals, 100) + ' ' + units[i];\n    }\n    case 's': {\n      const a = Math.abs(v);\n      if (a < 90) { return round(v, t.decimals, 10) + ' s'; }\n      if (a < 5400) { return (v / 60).toFixed(1) + ' min'; }\n      if (a < 172800) { return (v / 3600).toFixed(1) + ' h'; }\n      return (v / 86400).toFixed(1) + ' days';\n    }\n    case 'd': return round(v, t.decimals, 10) + ' days';\n    case 'dateTimeAsIso': {\n      const d = new Date(v);\n      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());\n    }\n    default: return round(v, t.decimals, 100);\n  }\n};\nconst level = (v, t) => {\n  if (!isFinite(v)) { return 'unknown'; }\n  let lv = 'info';\n  t.steps.forEach((st) => { if (st[0] === null || v >= st[0]) { lv = st[1]; } });\n  return lv;\n};\nconst show = (row, t) => {\n  const v = num(row);\n  const m = t.maps[String(v)];\n  if (m) { return { text: m.text, level: m.level }; }\n  const text = t.legend ? t.legend.replace(/\\{\\{\\s*(\\w+)\\s*\\}\\}/g, (all, name) => (row[name] === undefined ? '' : row[name])).trim() : fmt(v, t);\n  return { text: text, level: level(v, t) };\n};\nconst WORD = { ok: 'OK', warning: 'Check', critical: 'Action', info: 'Info', unknown: 'No data' };\ncontext.handlebars.registerHelper('cohesitySection', (rows) => {\n  const tiles = SECTION.tiles.map((t) => {\n    const mine = (rows || []).filter((row) => row.k === t.k);\n    let body;\n    let lv = 'unknown';\n    if (mine.length > 1 || (t.list && mine.length)) {\n      // A count per version and the like: one line per series with its count, the tile coloured by the first.\n      lv = show(mine[0], t).level;\n      body = '<div class=\"ss-list\">' + mine.map((row) => '<div><span>' + esc(show(row, t).text) + '</span><b>' + esc(fmt(num(row), Object.assign({}, t, { unit: null }))) + '</b></div>').join('') + '</div>';\n    } else {\n      const r = mine.length ? show(mine[0], t) : { text: 'No data', level: 'unknown' };\n      lv = r.level;\n      body = '<div class=\"ss-value' + (r.text.length > 10 ? ' ss-long' : '') + '\" title=\"' + esc(r.text) + '\">' + esc(r.text) + '</div>';\n    }\n    return '<div class=\"ss-card ' + lv + '\"><div class=\"ss-label\" title=\"' + esc(t.label) + '\">' + esc(t.label) + '</div>' + body +\n      '<div class=\"ss-pill\">' + WORD[lv] + '</div></div>';\n  }).join('');\n  return new context.handlebars.SafeString('<div class=\"ss-section\"><div class=\"ss-head\">' + esc(SECTION.title) + '</div>' +\n    '<div class=\"ss ss-tiles\" style=\"grid-template-columns: repeat(' + SECTION.tiles.length + ', minmax(0, 1fr))\">' + tiles + '</div></div>');\n});\n",
+        "styles": ".ss-section { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; border-radius: 18px; overflow: hidden;\n  background: #141A26; border: 1px solid #1E2738; }\n.ss-head { flex: none; display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 18px; border-radius: 18px;\n  background: linear-gradient(90deg, #1E2738 0%, #141A26 100%); color: #8AB8FF; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; }\n.ss { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(240px, 1.4fr) repeat(4, minmax(140px, 1fr)); grid-auto-rows: 1fr; gap: 10px; padding: 10px 12px 12px; }\n.ss-hero { grid-row: span 2; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 16px 20px; border-radius: 14px;\n  background: linear-gradient(135deg, #141A26 0%, #1E2738 100%); border-left: 4px solid #3D71D9; }\n.ss-mark { width: 44px; height: 44px; border-radius: 50%; border: 3px solid currentColor; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; }\n.ss-hero-title { font-size: 22px; font-weight: 700; line-height: 1.2; }\n.ss-hero-sub { color: #A3ACB9; font-size: 13px; }\n.ss-card { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 0; padding: 10px 14px; border-radius: 14px;\n  background: #1E2738; border-top: 3px solid #5794F2; }\n.ss-label { color: #8AB8FF; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value { color: #FFFFFF; font-size: 32px; font-weight: 700; line-height: 1.1; }\n.ss-pill { align-self: flex-start; padding: 2px 9px; border-radius: 10px; color: #FFFFFF; font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; }\n.ss-hero.ok { color: #73BF69; } .ss-hero.warning { color: #FF9830; } .ss-hero.critical { color: #F2495C; } .ss-hero.unknown { color: #A3ACB9; }\n.ss-hero .ss-hero-title { color: #FFFFFF; }\n.ss-card.ok { border-top-color: #73BF69; } .ss-card.ok .ss-pill { background: #73BF69; }\n.ss-card.info .ss-pill { background: #5794F2; }\n.ss-card.warning { border-top-color: #FF9830; background: linear-gradient(180deg, #FF983040 0%, #1E2738 70%); } .ss-card.warning .ss-pill { background: #FF9830; }\n.ss-card.critical { border-top-color: #F2495C; background: linear-gradient(180deg, #F2495C40 0%, #1E2738 70%); } .ss-card.critical .ss-pill { background: #F2495C; }\n.ss-card.unknown { border-top-color: #A3ACB9; } .ss-card.unknown .ss-pill { background: #A3ACB9; color: #141A26; }\n.ss.ss-tiles { grid-auto-rows: auto; grid-template-rows: 1fr; }\n.ss-tiles .ss-hero { grid-row: auto; grid-column: 1 / -1; }\n.ss-value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n.ss-value.ss-long { font-size: 20px; line-height: 1.2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }\n.ss-list { display: flex; flex-direction: column; gap: 2px; font-size: 16px; font-weight: 600; color: #FFFFFF; overflow: hidden; }\n.ss-list div { display: flex; justify-content: space-between; gap: 8px; } .ss-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n",
+        "wrap": false,
+        "editors": [
+          "helpers",
+          "styles"
+        ],
+        "editor": {
+          "format": "auto",
+          "language": "html"
+        },
+        "contentPartials": [],
+        "externalStyles": [],
+        "afterRender": "",
+        "status": ""
+      },
+      "description": "Package version: Version of the installed Cohesity monitoring package (VERSION file in the install folder)."
+    },
+    {
+      "type": "table",
+      "title": "Checks",
+      "id": 29,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 0,
+        "y": 125
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_check_success{cluster=\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_check_last_success_timestamp_seconds{cluster=\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last success"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "OK"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "cluster": true
+            },
+            "renameByName": {
+              "Value #A": "OK",
+              "Value #B": "Last success"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "OK",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Collection time",
+      "id": 31,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 12,
+        "x": 12,
+        "y": 125
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_collect_duration_seconds{cluster=\"$cluster\"}",
+          "legendFormat": "seconds"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 15,
+            "lineWidth": 1,
+            "showPoints": "never"
+          },
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

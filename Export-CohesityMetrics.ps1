@@ -1,37 +1,43 @@
 <#
 .SYNOPSIS
-Collects Cohesity health, capacity, deduplication, replication, tape, hardware, configuration and event log
-data and writes it in Prometheus text format for the windows_exporter textfile collector.
+Collects Cohesity cluster health, capacity, protection group runs, SLA, replication, archival, recoveries,
+sources, alerts and configuration and writes them in Prometheus text format for the windows_exporter
+(or node_exporter) textfile collector.
 
 .DESCRIPTION
-Read-only. Apart from login/logout, every call is a GET, except one PUT /server/event, which only downloads
-the event log as CSV (it changes nothing on the appliance).
+Read-only. Every call is a GET (v2 at /v2, v1 at /irisservices/api/v1/public), plus, in AuthMode Password,
+the access-token login POST, which changes nothing on the cluster. Cohesity.psm1 has no way to send any other
+method.
 
-Run it from Task Scheduler every 5 minutes with -All -NonInteractive (CredentialFile per server in
-Cohesity.config.json). The .prom file is written to a temp name and renamed so that windows_exporter
-never reads a half-written file.
+Run it from Task Scheduler (or the systemd timer) every 5 minutes with -All -NonInteractive (CredentialFile
+per cluster in Cohesity.config.json). The .prom file is written to a temp name and renamed so that the
+exporter never reads a half-written file.
 
 Checks run on three cadences:
-  - every run: health, queues, activity, run history, event log;
-  - every 15 minutes: the full virtual tape inventory;
-  - every 60 minutes: configuration and inventory that rarely changes (server info, patches, network, ...).
+  - every run: cluster health and capacity, storage domains, nodes, protection groups and their last runs
+    (local, replication, archival), runs in the last 24 hours, running-run progress, SLA, failed objects,
+    recoveries, alerts;
+  - every 15 minutes: protected/unprotected object summary, sources, external targets, archive usage, views,
+    antivirus findings;
+  - every 60 minutes: configuration and inventory that rarely changes (policies, remote clusters, capacity
+    by consumer, licence, patches).
 Results of the slower checks are cached in the state folder and re-emitted on the runs in between.
 
 Settings (all optional, under Defaults in Cohesity.config.json):
-  StateDirectory         'state'   collector state: event log bookmark, check cache
-  CollectEventLog        true      download new event log entries every run
-  EventLogDirectory      'events'  daily raw CSV archive of the event log, per appliance
-  EventLogRetentionDays  90        archive files older than this are deleted
-  DisabledChecks         []        check names to skip, e.g. ["tapecaching","users"]
+  StateDirectory         'state'   collector state: alert bookmark, run first-seen times, check cache
+  CollectAlerts          true      read new alerts every run (counters, recent list, raw archive)
+  AlertLogDirectory      'events'  daily raw CSV archive of new alerts, per cluster
+  AlertLogRetentionDays  90        archive files older than this are deleted
+  DisabledChecks         []        check names to skip, e.g. ["antivirus","views"]
 
 Output directory precedence: -TextfileDirectory, then Defaults.TextfileDirectory in the config
 (relative paths resolve against the config file's folder), then the 'metrics' folder next to the config.
 
-Parallel mode: with more than two appliances the collector runs one child process per appliance, -MaxParallel at a
-time (default: one per four appliances, at most 8), each writing metrics\cohesity-<server>.prom; cohesity.prom then
+Parallel mode: with more than two clusters the collector runs one child process per cluster, -MaxParallel at a
+time (default: one per four clusters, at most 8), each writing metrics\cohesity-<cluster>.prom; cohesity.prom then
 only carries the collector's own summary. -MaxParallel 1 forces the single-process mode.
 
-Exit codes: 0 all checks succeeded, 2 a server or check failed (metrics still written), 3 usage/config error.
+Exit codes: 0 all checks succeeded, 2 a cluster or check failed (metrics still written), 3 usage/config error.
 
 .EXAMPLE
 .\Export-CohesityMetrics.ps1 -All -NonInteractive
@@ -141,30 +147,10 @@ function Add-Metric {
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-function Get-DataField {
-    # Some endpoints return fields under 'data', others at the top level (e.g. storagethreshold, tapecaching).
-    param($Response, [string]$Name, $Default = $null)
-    $data = Get-OptionalValue $Response 'data' $null
-    $value = Get-OptionalValue $data $Name $null
-    if ($null -eq $value) { $value = Get-OptionalValue $Response $Name $Default }
-    return $value
-}
-
-function Get-DataArray {
-    # Endpoints that return a list either as data[] or data.<collection>[].
-    param($Response, [string]$Collection)
-    # Read the property directly: returning it through a function would unroll a one-element array.
-    $dataProperty = $Response.PSObject.Properties['data']
-    if ($null -eq $dataProperty -or $null -eq $dataProperty.Value) { return @() }
-    $data = $dataProperty.Value
-    if ($data -is [System.Array]) { return $data }
-    $collectionProperty = $data.PSObject.Properties[$Collection]
-    if ($null -eq $collectionProperty -or $null -eq $collectionProperty.Value) { return @() }
-    return @($collectionProperty.Value)
-}
+$v1 = '/irisservices/api/v1/public'
 
 function Get-Prop {
-    # Dotted path lookup that tolerates missing properties: Get-Prop $obj 'failoverstatus.status'.
+    # Dotted path lookup that tolerates missing properties: Get-Prop $obj 'stats.usagePerfStats.readIos'.
     # Arrays are unrolled, so wrap the call in @() when a list is expected.
     param($Object, [string]$Path, $Default = $null)
     $current = $Object
@@ -178,10 +164,30 @@ function Get-Prop {
     return $current
 }
 
+function Get-Array {
+    # A list property of a response (Get-Array $r 'protectionGroups'), or the response itself when it is a bare JSON array.
+    # Read the property directly: returning it through a function would unroll a one-element array.
+    param($Response, [string]$Name)
+    if ($null -eq $Response) { return @() }
+    if ($Response -is [System.Array]) { return $Response }
+    if (-not $Name) { return @($Response) }
+    $property = $Response.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) { return @() }
+    return @($property.Value)
+}
+
 function Get-CleanState {
     param($Value)
     if ($null -eq $Value) { return '' }
     return ([string]$Value).Trim().ToLowerInvariant()
+}
+
+function ConvertTo-Env {
+    # kVMware -> vmware, kPhysicalFiles -> physicalfiles: the environment label without Cohesity's k prefix.
+    param($Value)
+    $text = [string]$Value
+    if ($text -cmatch '^k[A-Z]') { $text = $text.Substring(1) }
+    return $text.ToLowerInvariant()
 }
 
 function ConvertTo-Flag {
@@ -195,12 +201,24 @@ function ConvertTo-Flag {
     return $null
 }
 
-function ConvertFrom-RatioText {
-    # "1.9 : 1" -> 1.9, "> 10000:1" -> 10000, "N/A" -> $null
-    param($Text)
-    if ($null -eq $Text) { return $null }
-    if (([string]$Text) -match '([0-9]+(?:\.[0-9]+)?)\s*:\s*1') { return [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture) }
-    return $null
+function ConvertFrom-Usecs {
+    # Microseconds since the epoch (or a duration in microseconds) -> seconds; 0 or missing -> $null.
+    param($Value)
+    if ($null -eq $Value -or [double]$Value -le 0) { return $null }
+    return [Math]::Floor([double]$Value / 1000000)
+}
+
+function Get-Duration {
+    param($StartUsecs, $EndUsecs)
+    if ($null -eq $StartUsecs -or $null -eq $EndUsecs -or [double]$StartUsecs -le 0 -or [double]$EndUsecs -lt [double]$StartUsecs) { return $null }
+    return ([double]$EndUsecs - [double]$StartUsecs) / 1000000
+}
+
+function Get-ShortText {
+    param($Text, [int]$Max = 200)
+    $t = ([string]$Text -replace '\s+', ' ').Trim()
+    if ($t.Length -gt $Max) { $t = $t.Substring(0, $Max) + '...' }
+    return $t
 }
 
 function Add-Count {
@@ -209,8 +227,8 @@ function Add-Count {
 }
 
 function New-Label {
-    # New-Label $l 'policy' $name 'status' $status -> [ordered]@{ server = ...; policy = ...; status = ... }
-    $labels = [ordered]@{ server = $args[0].server }
+    # New-Label $l 'group' $name 'status' $status -> [ordered]@{ cluster = ...; group = ...; status = ... }
+    $labels = [ordered]@{ cluster = $args[0].cluster }
     for ($i = 1; $i -lt $args.Count; $i += 2) { $labels[[string]$args[$i]] = $args[$i + 1] }
     return $labels
 }
@@ -235,90 +253,14 @@ function Write-JsonState {
 
 function Get-UnixNow { return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
 
-# Lookups shared between checks within one appliance run ($x is a per-server hashtable).
-function Get-Policies {
-    param($c, [hashtable]$x)
-    if (-not $x.ContainsKey('Policies')) { $x.Policies = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/dedupepolicy') 'policies') }
-    return $x.Policies
-}
-
-function Get-LibraryNames {
-    param($c, [hashtable]$x)
-    if (-not $x.ContainsKey('Libraries')) { $x.Libraries = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtuallibrary') 'libraries') }
-    $names = @{}
-    foreach ($v in $x.Libraries) { $names[[string](Get-OptionalValue $v 'id' '')] = [string](Get-OptionalValue $v 'name' '') }
-    return $names
-}
-
-function Get-ApplianceTime {
-    # Appliance local wall-clock time (the event log range is expressed in it).
-    param($c, [hashtable]$x)
-    if (-not $x.ContainsKey('SystemTime')) {
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/properties/time'
-        $x.SystemTime = [string](Get-DataField $r 'systemtime' '')
-        $x.EpochTime = [double](Get-DataField $r 'epochetime' 0)
-    }
-    return [datetime]::ParseExact($x.SystemTime.Trim(), 'yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
-}
-
-function Get-RunHistory {
-    param($c, $PolicyId, [long]$From)
-    $runs = [System.Collections.Generic.List[object]]::new()
-    $offset = 0
-    while ($true) {
-        $r = Invoke-CohesityApi -Connection $c -Path ('/dedupepolicy/runhistory/{0}?fromts={1}&offset={2}&limit=1000' -f $PolicyId, $From, $offset)
-        $page = @(Get-DataArray $r 'jobs')
-        foreach ($run in $page) { $runs.Add($run) }
-        if ($page.Count -lt 1000) { break }
-        $offset += 1000
-    }
-    return $runs.ToArray()
-}
-
-function Get-ActiveStatus {
-    # Per-policy scan/replication activity, fetched once per run.
-    param($c, [hashtable]$x, $PolicyId)
-    if (-not $x.ContainsKey('ActiveStatus')) { $x.ActiveStatus = @{} }
-    $key = [string]$PolicyId
-    if (-not $x.ActiveStatus.ContainsKey($key)) {
-        $x.ActiveStatus[$key] = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path ('/dedupepolicy/activestatus/{0}' -f $PolicyId)) 'data' $null
-    }
-    return $x.ActiveStatus[$key]
-}
-
-function Get-DriveNames {
-    # Drive serial number -> drive name, for library drives and standalone drives. Job records only carry serials.
-    param($c, [hashtable]$x)
-    if ($x.ContainsKey('DriveNames')) { return $x.DriveNames }
-    $names = @{}
-    try {
-        if (-not $x.ContainsKey('Libraries')) { $x.Libraries = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtuallibrary') 'libraries') }
-        foreach ($lib in $x.Libraries) {
-            $id = Get-OptionalValue $lib 'id' $null
-            if ($null -eq $id) { continue }
-            foreach ($d in @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path ('/virtuallibrary/drive/{0}' -f $id)) 'drives')) {
-                $sn = [string](Get-OptionalValue $d 'serialno' ''); if ($sn) { $names[$sn] = [string](Get-OptionalValue $d 'name' '') }
-            }
-        }
-        foreach ($d in @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtualdrive') 'drives')) {
-            $sn = [string](Get-OptionalValue $d 'serialno' ''); if ($sn) { $names[$sn] = [string](Get-OptionalValue $d 'name' '') }
-        }
-    } catch { Write-Verbose "drive names: $($_.Exception.Message)" }
-    $x.DriveNames = $names
-    return $names
-}
-
-function Resolve-DriveName {
-    param([hashtable]$Names, $Serial)
-    $sn = [string]$Serial
-    if (-not $sn) { return '' }
-    if ($Names.ContainsKey($sn) -and $Names[$sn]) { return $Names[$sn] }
-    return $sn
+function Get-UsecsAgo {
+    param([double]$Hours)
+    return [long](([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $Hours * 3600000) * 1000)
 }
 
 function Update-FirstSeen {
-    # The API has no start time for queued jobs, so the collector remembers when it first saw each job key.
-    # Keys that are no longer present are dropped. Returns key -> Unix time.
+    # Remembers when the collector first saw each key (e.g. a running run or recovery); keys no longer present
+    # are dropped. Returns key -> Unix time.
     param([string]$Path, [string[]]$Keys)
     $now = Get-UnixNow
     $old = @{}
@@ -333,977 +275,621 @@ function Update-FirstSeen {
     return $current
 }
 
-# Per-job detail calls are capped so a huge queue cannot blow the collection interval; jobs beyond the cap get list data only.
-$maxJobDetails = 100
+# Lookups shared between checks within one cluster run ($x is a per-cluster hashtable).
+function Get-Groups {
+    param($c, [hashtable]$x)
+    if (-not $x.ContainsKey('Groups')) {
+        $x.Groups = @(Get-CohesityPagedCollection -Connection $c -CollectionName 'protectionGroups' `
+            -Path '/v2/data-protect/protection-groups?isDeleted=false&includeLastRunInfo=true&pruneSourceIds=true&pruneExcludedSourceIds=true&includeTenants=true')
+    }
+    return $x.Groups
+}
+
+function Get-PolicyNames {
+    param($c, [hashtable]$x)
+    if (-not $x.ContainsKey('PolicyNames')) {
+        $names = @{}
+        $x.Policies = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/data-protect/policies?includeTenants=true') 'policies')
+        foreach ($p in $x.Policies) { $names[[string](Get-OptionalValue $p 'id' '')] = [string](Get-OptionalValue $p 'name' '') }
+        $x.PolicyNames = $names
+    }
+    return $x.PolicyNames
+}
+
+function Get-DomainNames {
+    param($c, [hashtable]$x)
+    if (-not $x.ContainsKey('DomainNames')) {
+        $names = @{}
+        try {
+            foreach ($d in @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/storage-domains') 'storageDomains')) {
+                $names[[string](Get-OptionalValue $d 'id' '')] = [string](Get-OptionalValue $d 'name' '')
+            }
+        } catch { Write-Verbose "storage domain names: $($_.Exception.Message)" }
+        $x.DomainNames = $names
+    }
+    return $x.DomainNames
+}
+
+function Get-RunsSummary {
+    # Every run that started in the last 24 hours (v2 runs summary), fetched once per cluster run.
+    param($c, [hashtable]$x)
+    if (-not $x.ContainsKey('Runs')) {
+        $x.Runs = @(Get-Array (Invoke-CohesityApi -Connection $c -Path ('/v2/data-protect/runs/summary?startTimeUsecs={0}' -f (Get-UsecsAgo 24))) 'protectionRunsSummary')
+    }
+    return $x.Runs
+}
+
+# Run states that mean "in progress" (the v2 status enum: Accepted, Running, Canceled, Canceling, Failed, Missed,
+# Succeeded, SucceededWithWarning, OnHold, Finalizing, Skipped, Paused).
+$activeRunStates = @('accepted', 'running', 'canceling', 'onhold', 'finalizing', 'paused')
+
+# Per-run and per-group detail calls are capped so a busy cluster cannot blow the collection interval.
+$maxRunDetails = 50
+$maxFailedGroups = 20
+$maxFailedObjects = 200
+
+function Add-RunTargetMetrics {
+    # Replication and archival results of one run (a group's last run): one series set per target.
+    param($l, [string]$Group, $Run)
+    foreach ($t in @(Get-Prop $Run 'replicationInfo.replicationTargetResults' @())) {
+        $tl = New-Label $l 'group' $Group 'target' (Get-OptionalValue $t 'clusterName' '')
+        Add-Metric 'cohesity_replication_last_status' 'Status of the group''s last replication to this target (1 for the current status label).' 1 (New-Label $l 'group' $Group 'target' (Get-OptionalValue $t 'clusterName' '') 'status' (Get-CleanState (Get-OptionalValue $t 'status' '')))
+        Add-Metric 'cohesity_replication_last_start_timestamp_seconds' 'Start of the group''s last replication to this target (Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $t 'startTimeUsecs' $null)) $tl
+        Add-Metric 'cohesity_replication_last_end_timestamp_seconds' 'End of the group''s last replication to this target (Unix time; absent while it runs).' (ConvertFrom-Usecs (Get-OptionalValue $t 'endTimeUsecs' $null)) $tl
+        Add-Metric 'cohesity_replication_last_sla_violated' 'The group''s last replication to this target violated its SLA (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $t 'isSlaViolated' $null)) $tl
+        Add-Metric 'cohesity_replication_last_percent' 'Progress of the group''s last replication to this target, in percent.' (Get-OptionalValue $t 'percentageCompleted' $null) $tl
+        Add-Metric 'cohesity_replication_last_logical_bytes' 'Logical bytes transferred by the group''s last replication to this target.' (Get-Prop $t 'stats.logicalBytesTransferred' $null) $tl
+        Add-Metric 'cohesity_replication_last_physical_bytes' 'Physical bytes transferred by the group''s last replication to this target.' (Get-Prop $t 'stats.physicalBytesTransferred' $null) $tl
+    }
+    foreach ($t in @(Get-Prop $Run 'archivalInfo.archivalTargetResults' @())) {
+        $tl = New-Label $l 'group' $Group 'target' (Get-OptionalValue $t 'targetName' '')
+        Add-Metric 'cohesity_archive_last_status' 'Status of the group''s last archive to this target (1 for the current status label).' 1 (New-Label $l 'group' $Group 'target' (Get-OptionalValue $t 'targetName' '') 'target_type' (Get-OptionalValue $t 'targetType' '') 'status' (Get-CleanState (Get-OptionalValue $t 'status' '')))
+        Add-Metric 'cohesity_archive_last_start_timestamp_seconds' 'Start of the group''s last archive to this target (Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $t 'startTimeUsecs' $null)) $tl
+        Add-Metric 'cohesity_archive_last_end_timestamp_seconds' 'End of the group''s last archive to this target (Unix time; absent while it runs).' (ConvertFrom-Usecs (Get-OptionalValue $t 'endTimeUsecs' $null)) $tl
+        Add-Metric 'cohesity_archive_last_sla_violated' 'The group''s last archive to this target violated its SLA (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $t 'isSlaViolated' $null)) $tl
+        Add-Metric 'cohesity_archive_last_logical_bytes' 'Logical bytes transferred by the group''s last archive to this target.' (Get-Prop $t 'stats.logicalBytesTransferred' $null) $tl
+        Add-Metric 'cohesity_archive_last_physical_bytes' 'Physical bytes transferred by the group''s last archive to this target.' (Get-Prop $t 'stats.physicalBytesTransferred' $null) $tl
+        Add-Metric 'cohesity_archive_last_transfer_rate_bytes_per_second' 'Average logical transfer rate of the group''s last archive to this target.' (Get-Prop $t 'stats.avgLogicalTransferRateBps' $null) $tl
+    }
+}
 
 # ---------------------------------------------------------------------------
-# Event log: PUT /server/event returns CSV. The column layout is not documented, so columns are
-# found by header name, falling back to the values' shape.
+# Alerts: open alerts every run (counts and the 20 most recent critical/warning), plus new alerts since the last
+# run (counters by severity and a raw daily CSV archive, like an event log).
 # ---------------------------------------------------------------------------
-function Split-CsvLine {
-    param([string]$Line, [int]$Count = 64)
-    $headers = 1..$Count | ForEach-Object { "c$_" }
-    $row = ConvertFrom-Csv -InputObject $Line -Header $headers
-    $values = foreach ($h in $headers) { $v = $row.$h; if ($null -eq $v) { break }; [string]$v }
-    return @($values)
-}
-
-function Get-EventSeverity {
-    param([string]$Value)
-    $v = $Value.Trim().ToLowerInvariant()
-    if ($v -eq '') { return 'unknown' }
-    switch -Regex ($v) {
-        '^(c|crit)'  { return 'critical' }
-        '^(e|err)'   { return 'error' }
-        '^(w|warn)'  { return 'warning' }
-        '^(i|info)'  { return 'informational' }
+function ConvertTo-Severity {
+    param($Value)
+    switch -Regex (Get-CleanState $Value) {
+        'crit' { return 'critical' }
+        'warn' { return 'warning' }
+        'info' { return 'info' }
     }
-    return $v
+    $s = Get-CleanState $Value
+    if ($s) { return $s }
+    return 'unknown'
 }
 
-function Get-EventLayout {
-    # Returns @{ HasHeader; Headers; Severity; Date; Time; Id; Message } with column indexes (-1 if absent).
-    param([string[]]$Lines)
-    $first = @(Split-CsvLine $Lines[0])
-    $layout = @{ HasHeader = $false; Headers = $first; Severity = -1; Date = -1; Time = -1; Id = -1; Message = -1 }
-    # A header row has short names and no numeric fields (data rows carry dates, times and event IDs).
-    if (@($first | Where-Object { $_ -match '\d' -or $_.Length -gt 40 }).Count -eq 0) {
-        for ($i = 0; $i -lt $first.Count; $i++) {
-            $h = $first[$i].Trim().ToLowerInvariant()
-            if ($layout.Severity -lt 0 -and $h -match '^(event )?(type|severity|level)$') { $layout.Severity = $i; $layout.HasHeader = $true }
-            elseif ($layout.Date -lt 0 -and $h -match 'date') { $layout.Date = $i; $layout.HasHeader = $true }
-            elseif ($layout.Time -lt 0 -and $h -match 'time') { $layout.Time = $i; $layout.HasHeader = $true }
-            elseif ($layout.Id -lt 0 -and $h -match '^(event )?(id|code|number)$') { $layout.Id = $i; $layout.HasHeader = $true }
-            elseif ($layout.Message -lt 0 -and $h -match 'message|description|text|^event$') { $layout.Message = $i; $layout.HasHeader = $true }
-        }
-    }
-    if (-not $layout.HasHeader) {
-        # No recognisable header: guess from the values of the first rows.
-        $sample = @($Lines | Select-Object -First 20 | ForEach-Object { , @(Split-CsvLine $_) })
-        $columns = ($sample | ForEach-Object { $_.Count } | Measure-Object -Maximum).Maximum
-        $layout.Headers = @(1..$columns | ForEach-Object { "Column$_" })
-        for ($i = 0; $i -lt $columns; $i++) {
-            $values = @($sample | ForEach-Object { if ($_.Count -gt $i) { $_[$i] } })
-            if ($layout.Severity -lt 0 -and @($values | Where-Object { $_ -match '^(?i)(i|w|e|c|info\w*|warn\w*|err\w*|crit\w*)$' }).Count -eq $values.Count) { $layout.Severity = $i; continue }
-            if ($layout.Date -lt 0 -and @($values | Where-Object { $_ -match '^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}' }).Count -eq $values.Count) { $layout.Date = $i; continue }
-            if ($layout.Time -lt 0 -and @($values | Where-Object { $_ -match '^\d{1,2}:\d{2}' }).Count -eq $values.Count) { $layout.Time = $i; continue }
-            if ($layout.Id -lt 0 -and @($values | Where-Object { $_ -match '^\d+$' }).Count -eq $values.Count) { $layout.Id = $i; continue }
-        }
-        $longest = -1; $best = -1
-        for ($i = 0; $i -lt $columns; $i++) {
-            if ($i -in @($layout.Severity, $layout.Date, $layout.Time, $layout.Id)) { continue }
-            $avg = ($sample | ForEach-Object { if ($_.Count -gt $i) { $_[$i].Length } else { 0 } } | Measure-Object -Average).Average
-            if ($avg -gt $longest) { $longest = $avg; $best = $i }
-        }
-        $layout.Message = $best
-    }
-    return $layout
+function ConvertTo-CsvField {
+    param($Value)
+    return '"' + ([string]$Value).Replace('"', '""').Replace("`r", ' ').Replace("`n", ' ') + '"'
 }
 
-function ConvertTo-EventEpoch {
-    # Appliance local date/time text -> Unix time, assuming the appliance and this host share a time zone.
-    param([string]$Text)
-    $t = ($Text -replace '\s+', ' ').Trim()
-    if (-not $t) { return 0 }
-    $formats = @('MM/dd/yyyy HH:mm:ss', 'M/d/yyyy HH:mm:ss', 'M/d/yyyy H:mm:ss', 'yyyy-MM-dd HH:mm:ss', 'yyyy/MM/dd HH:mm:ss', 'dd/MM/yyyy HH:mm:ss', 'MM/dd/yyyy', 'yyyy-MM-dd')
-    $parsed = [datetime]::MinValue
-    if ([datetime]::TryParseExact($t, [string[]]$formats, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeLocal, [ref]$parsed)) {
-        return [long]([DateTimeOffset]$parsed).ToUnixTimeSeconds()
-    }
-    return 0
-}
-
-function Get-TextHash {
-    param([string]$Text)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { return ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))) -replace '-', '').Substring(0, 16) }
-    finally { $sha.Dispose() }
-}
-
-function Invoke-EventLogCheck {
+function Invoke-AlertCheck {
     param($c, $l, [hashtable]$x)
-    $serverFile = Get-SafeFileName $l.server
-    $statePath = Join-Path $config.StateDirectory ("events-{0}.json" -f $serverFile)
+    $clusterFile = Get-SafeFileName $l.cluster
+    $statePath = Join-Path $config.StateDirectory ("alerts-{0}.json" -f $clusterFile)
     $state = Read-JsonState $statePath
-    $counts = @{}; $recent = @(); $lastHashes = @{}; $lastEnd = ''
+    $counts = @{}; $seen = @{}; $since = Get-UsecsAgo 24
     if ($null -ne $state) {
-        $lastEnd = [string](Get-OptionalValue $state 'LastEnd' '')
+        $since = [long](Get-OptionalValue $state 'SinceUsecs' $since)
         $countsObj = Get-OptionalValue $state 'Counts' $null
         if ($null -ne $countsObj) { foreach ($p in $countsObj.PSObject.Properties) { $counts[$p.Name] = [double]$p.Value } }
-        $recent = @(Get-OptionalValue $state 'Recent' @())
-        foreach ($h in @(Get-OptionalValue $state 'LastHashes' @())) { $lastHashes[[string]$h] = $true }
+        foreach ($id in @(Get-OptionalValue $state 'SeenIds' @())) { $seen[[string]$id] = $true }
     }
 
-    $now = Get-ApplianceTime $c $x
-    $end = $now.ToString('yyyyMMddHHmmss')
-    # First run: the last 24 hours. Later runs: from the previous end (inclusive); duplicates are dropped by hash.
-    $start = if ($lastEnd -match '^\d{14}$') { $lastEnd } else { $now.AddHours(-24).ToString('yyyyMMddHHmmss') }
-    $text = Invoke-CohesityDownload -Connection $c -Path '/server/event' -Method Put -Body @{ range = "$start-$end" }
-
-    $lines = @($text -split "`r?`n" | Where-Object { $_.Trim() -ne '' -and $_ -notmatch '^sep=' })
-    $newRows = [System.Collections.Generic.List[object]]::new()
-    $hashes = [System.Collections.Generic.List[string]]::new()
-    $layout = $null
-    if ($lines.Count -gt 0) {
-        $layout = Get-EventLayout $lines
-        $dataLines = if ($layout.HasHeader) { @($lines | Select-Object -Skip 1) } else { $lines }
-        foreach ($line in $dataLines) {
-            $hash = Get-TextHash $line
-            $hashes.Add($hash)
-            if ($lastHashes.ContainsKey($hash)) { continue }
-            $newRows.Add([pscustomobject]@{ Line = $line; Fields = @(Split-CsvLine $line) })
-        }
+    # Open alerts: counts by severity and category, and the newest critical/warning ones for the dashboards.
+    $open = @(Get-Array (Invoke-CohesityApi -Connection $c -Path "$v1/alerts?maxAlerts=1000&alertStateList=kOpen") '')
+    $openCounts = @{}
+    foreach ($sev in @('critical', 'warning', 'info')) { $openCounts["$sev|"] = 0 }
+    foreach ($a in $open) {
+        $sev = ConvertTo-Severity (Get-OptionalValue $a 'severity' '')
+        Add-Count $openCounts ("{0}|{1}" -f $sev, (ConvertTo-Env (Get-OptionalValue $a 'alertCategory' '')))
+    }
+    $bySeverity = @{ critical = 0; warning = 0; info = 0 }
+    foreach ($key in $openCounts.Keys) {
+        $sev, $category = $key.Split('|', 2)
+        Add-Count $bySeverity $sev $openCounts[$key]
+        if ($category) { Add-Metric 'cohesity_alerts_open_by_category' 'Open alerts by severity and category.' $openCounts[$key] (New-Label $l 'severity' $sev 'category' $category) }
+    }
+    foreach ($sev in $bySeverity.Keys) { Add-Metric 'cohesity_alerts_open' 'Open alerts by severity.' $bySeverity[$sev] (New-Label $l 'severity' $sev) }
+    $recent = @($open | Where-Object { (ConvertTo-Severity (Get-OptionalValue $_ 'severity' '')) -in @('critical', 'warning') } |
+        Sort-Object { [double](Get-OptionalValue $_ 'latestTimestampUsecs' 0) } -Descending | Select-Object -First 20)
+    foreach ($a in $recent) {
+        Add-Metric 'cohesity_alert_recent' 'Newest open critical and warning alerts (value is the latest occurrence as Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $a 'latestTimestampUsecs' $null)) (New-Label $l `
+            'severity' (ConvertTo-Severity (Get-OptionalValue $a 'severity' '')) 'category' (ConvertTo-Env (Get-OptionalValue $a 'alertCategory' '')) `
+            'code' (Get-OptionalValue $a 'alertCode' '') 'name' (Get-Prop $a 'alertDocument.alertName' '') 'id' (Get-OptionalValue $a 'id' '') `
+            'message' (Get-ShortText (Get-Prop $a 'alertDocument.alertDescription' '')) 'occurrences' (Get-OptionalValue $a 'dedupCount' ''))
     }
 
-    # Raw archive: one CSV per appliance per day (collector's date), header written once.
+    # New alerts (any state) first raised since the last run. The window overlaps by an hour and ids already seen are skipped.
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000
+    $fresh = @(Get-Array (Invoke-CohesityApi -Connection $c -Path ("$v1/alerts?maxAlerts=1000&startDateUsecs={0}&endDateUsecs={1}" -f ($since - 3600000000), $now)) '')
+    $newRows = @($fresh | Where-Object { -not $seen.ContainsKey([string](Get-OptionalValue $_ 'id' '')) } | Sort-Object { [double](Get-OptionalValue $_ 'firstTimestampUsecs' 0) })
+    $newBySeverity = @{}
+    foreach ($a in $newRows) {
+        $sev = ConvertTo-Severity (Get-OptionalValue $a 'severity' '')
+        Add-Count $counts $sev
+        Add-Count $newBySeverity $sev
+    }
+
+    # Raw archive: one CSV per cluster per day (collector's date), header written once.
     if ($newRows.Count -gt 0) {
-        if (-not (Test-Path -LiteralPath $config.EventLogDirectory -PathType Container)) { New-Item -ItemType Directory -Path $config.EventLogDirectory -Force | Out-Null }
-        $archive = Join-Path $config.EventLogDirectory ("Cohesity-Events-{0}-{1}.csv" -f $serverFile, (Get-Date -Format 'yyyyMMdd'))
+        if (-not (Test-Path -LiteralPath $config.AlertLogDirectory -PathType Container)) { New-Item -ItemType Directory -Path $config.AlertLogDirectory -Force | Out-Null }
+        $archive = Join-Path $config.AlertLogDirectory ("Cohesity-Alerts-{0}-{1}.csv" -f $clusterFile, (Get-Date -Format 'yyyyMMdd'))
         $out = [System.Collections.Generic.List[string]]::new()
-        if (-not (Test-Path -LiteralPath $archive) -and $layout.HasHeader) { $out.Add($lines[0]) }
-        foreach ($row in $newRows) { $out.Add($row.Line) }
+        if (-not (Test-Path -LiteralPath $archive)) { $out.Add('"FirstSeen","Latest","Severity","State","Category","Code","Id","Name","Description"') }
+        foreach ($a in $newRows) {
+            $out.Add((@((ConvertFrom-CohesityUsecs (Get-OptionalValue $a 'firstTimestampUsecs' $null)), (ConvertFrom-CohesityUsecs (Get-OptionalValue $a 'latestTimestampUsecs' $null)),
+                (ConvertTo-Severity (Get-OptionalValue $a 'severity' '')), (Get-OptionalValue $a 'alertState' ''), (Get-OptionalValue $a 'alertCategory' ''),
+                (Get-OptionalValue $a 'alertCode' ''), (Get-OptionalValue $a 'id' ''), (Get-Prop $a 'alertDocument.alertName' ''),
+                (Get-Prop $a 'alertDocument.alertDescription' '')) | ForEach-Object { ConvertTo-CsvField $_ }) -join ',')
+        }
         [System.IO.File]::AppendAllText($archive, (($out -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-        $cutoff = (Get-Date).AddDays(-$config.EventLogRetentionDays)
-        Get-ChildItem -LiteralPath $config.EventLogDirectory -Filter ("Cohesity-Events-{0}-*.csv" -f $serverFile) -File |
+        $cutoff = (Get-Date).AddDays(-$config.AlertLogRetentionDays)
+        Get-ChildItem -LiteralPath $config.AlertLogDirectory -Filter ("Cohesity-Alerts-{0}-*.csv" -f $clusterFile) -File |
             Where-Object { $_.LastWriteTime -lt $cutoff } | Remove-Item -Force -ErrorAction SilentlyContinue
     }
 
-    $newBySeverity = @{}
-    foreach ($row in $newRows) {
-        $f = $row.Fields
-        $sev = if ($layout.Severity -ge 0 -and $f.Count -gt $layout.Severity) { Get-EventSeverity $f[$layout.Severity] } else { 'unknown' }
-        Add-Count $counts $sev
-        Add-Count $newBySeverity $sev
-        if ($sev -ne 'informational') {
-            $when = @(@($layout.Date, $layout.Time) | Where-Object { $_ -ge 0 -and $f.Count -gt $_ } | ForEach-Object { $f[$_] }) -join ' '
-            $id = if ($layout.Id -ge 0 -and $f.Count -gt $layout.Id) { $f[$layout.Id] } else { '' }
-            $msg = if ($layout.Message -ge 0 -and $f.Count -gt $layout.Message) { $f[$layout.Message] } else { $row.Line }
-            if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) + '...' }
-            $recent += [pscustomobject]@{ time = $when; epoch = (ConvertTo-EventEpoch $when); severity = $sev; id = $id; message = $msg }
-        }
-    }
-    $recent = @($recent | Select-Object -Last 20)
-
-    foreach ($sev in @('critical', 'error', 'warning', 'informational')) { if (-not $counts.ContainsKey($sev)) { $counts[$sev] = 0 } }
+    foreach ($sev in @('critical', 'warning', 'info')) { if (-not $counts.ContainsKey($sev)) { $counts[$sev] = 0 } }
     foreach ($sev in $counts.Keys) {
-        Add-Metric 'cohesity_events_total' 'Event log entries seen by the collector, by severity (counter since the state file was created).' $counts[$sev] (New-Label $l 'severity' $sev) 'counter'
+        Add-Metric 'cohesity_alerts_total' 'Alerts raised, seen by the collector, by severity (counter since the state file was created).' $counts[$sev] (New-Label $l 'severity' $sev) 'counter'
         $n = if ($newBySeverity.ContainsKey($sev)) { $newBySeverity[$sev] } else { 0 }
-        Add-Metric 'cohesity_events_new' 'Event log entries new in this collector run, by severity.' $n (New-Label $l 'severity' $sev)
+        Add-Metric 'cohesity_alerts_new' 'Alerts first seen in this collector run, by severity.' $n (New-Label $l 'severity' $sev)
     }
-    $i = 0
-    foreach ($e in $recent) {
-        $i++
-        # Value is the event time as Unix time (parsed from the appliance's local date/time), or the sequence number if unparseable.
-        $value = Get-OptionalValue $e 'epoch' $null
-        if ($null -eq $value -or [double]$value -le 0) { $value = $i }
-        Add-Metric 'cohesity_event_recent' 'Most recent warning/error/critical events (value is the event time as Unix time; a small value is a sequence number when the time could not be parsed).' $value (New-Label $l 'severity' $e.severity 'time' $e.time 'id' $e.id 'message' $e.message)
-    }
-    Add-Metric 'cohesity_eventlog_columns_detected' 'Event log CSV columns recognised (1 = header found by name, 0 = guessed from values).' ([int]($null -ne $layout -and $layout.HasHeader)) (New-Label $l)
 
-    Write-JsonState $statePath ([ordered]@{ LastEnd = $end; Counts = $counts; Recent = $recent; LastHashes = @($hashes | Select-Object -Last 5000)
-        Columns = $(if ($null -ne $layout) { $layout.Headers } else { @() }) })
+    $ids = @($fresh | ForEach-Object { [string](Get-OptionalValue $_ 'id' '') } | Where-Object { $_ })
+    Write-JsonState $statePath ([ordered]@{ SinceUsecs = $now; Counts = $counts; SeenIds = @($ids | Select-Object -Last 5000) })
 }
 
 # ---------------------------------------------------------------------------
 # Checks. Each is independent; a failure is recorded in cohesity_check_success and does not stop the others.
-# Each scriptblock gets ($c = connection, $l = base labels, $x = per-appliance lookup cache).
+# Each scriptblock gets ($c = connection, $l = base labels, $x = per-cluster lookup cache).
 # ---------------------------------------------------------------------------
 $checks = [ordered]@{
-    # ---- Health and capacity (every run) ----
-    'version' = {
+    # ---- Cluster health and capacity (every run) ----
+    'cluster' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/properties/version'
-        $info = [ordered]@{ server = $l.server
-            product = Get-DataField $r 'product' ''; version = Get-DataField $r 'version' ''
-            build = Get-DataField $r 'build' ''; apiversion = Get-DataField $r 'apiversion' '' }
-        Add-Metric 'cohesity_info' 'Appliance product and version (value is always 1).' 1 $info
-    }
-    'time' = {
-        param($c, $l, $x)
-        Get-ApplianceTime $c $x | Out-Null
-        Add-Metric 'cohesity_time_seconds' 'Appliance clock (Unix time).' $x.EpochTime (New-Label $l)
-        Add-Metric 'cohesity_time_offset_seconds' 'Appliance clock minus the collector host clock, in seconds.' ($x.EpochTime - (Get-UnixNow)) (New-Label $l)
-    }
-    'failover' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/failover/status'
-        $status = Get-CleanState (Get-DataField $r 'status' '')
-        Add-Metric 'cohesity_failover_status' 'Failover status (1 for the current status label).' 1 ([ordered]@{ server = $l.server; status = $status })
-        Add-Metric 'cohesity_failover_healthy' 'Failover is normal or not configured (1) or in another state (0).' ([int]($status -in @('normal', 'notconfigured'))) ([ordered]@{ server = $l.server })
-    }
-    'storagepool' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/physicalresource/storagepool'
-        foreach ($p in (Get-DataArray $r 'storagepools')) {
-            $pl = [ordered]@{ server = $l.server; pool = Get-OptionalValue $p 'name' ''; resourcetype = Get-OptionalValue $p 'resourcetype' '' }
-            Add-Metric 'cohesity_storagepool_size_bytes' 'Storage pool size in bytes.' (Get-OptionalValue $p 'size' $null) $pl
-            Add-Metric 'cohesity_storagepool_used_bytes' 'Storage pool used size in bytes.' (Get-OptionalValue $p 'used' $null) $pl
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/cluster?fetchStats=true"
+        $info = New-Label $l 'name' (Get-OptionalValue $r 'name' '') 'id' (Get-OptionalValue $r 'id' '') 'version' (Get-OptionalValue $r 'clusterSoftwareVersion' '') `
+            'patch' (Get-OptionalValue $r 'patchVersion' '') 'type' (ConvertTo-Env (Get-OptionalValue $r 'clusterType' '')) 'deployment' (ConvertTo-Env (Get-OptionalValue $r 'clusterDeploymentType' ''))
+        Add-Metric 'cohesity_info' 'Cluster name, id, software version and patch (value is always 1).' 1 $info
+        Add-Metric 'cohesity_cluster_nodes' 'Nodes in the cluster.' (Get-OptionalValue $r 'nodeCount' $null) (New-Label $l)
+        Add-Metric 'cohesity_cluster_encryption_enabled' 'Encryption at rest enabled.' (ConvertTo-Flag (Get-OptionalValue $r 'encryptionEnabled' $null)) (New-Label $l)
+        Add-Metric 'cohesity_cluster_upgrade_aborted' 'The last software upgrade was aborted (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $r 'isUpgradeAborted' $null)) (New-Label $l)
+        Add-Metric 'cohesity_cluster_patch_apply_aborted' 'The last patch apply was aborted (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $r 'isPatchApplyAborted' $null)) (New-Label $l)
+        $clock = Get-OptionalValue $r 'currentTimeMsecs' $null
+        if ($null -ne $clock) {
+            Add-Metric 'cohesity_time_seconds' 'Cluster clock (Unix time).' ([double]$clock / 1000) (New-Label $l)
+            Add-Metric 'cohesity_time_offset_seconds' 'Cluster clock minus the collector host clock, in seconds.' ([double]$clock / 1000 - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000) (New-Label $l)
+        }
+        # usagePerfStats: the I/O counters cover the last 30 seconds, so divide by 30 for per-second rates.
+        $u = Get-Prop $r 'stats.usagePerfStats' $null
+        Add-Metric 'cohesity_cluster_capacity_bytes' 'Physical capacity of all storage devices, after space reserved for cluster services.' (Get-OptionalValue $u 'physicalCapacityBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_cluster_usable_capacity_bytes' 'Minimum usable capacity after erasure coding or replication factor.' (Get-OptionalValue $u 'minUsablePhysicalCapacityBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_cluster_used_bytes' 'Data stored locally after deduplication and compression, including resiliency (EC/RF).' (Get-OptionalValue $u 'totalPhysicalUsageBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_cluster_system_capacity_bytes' 'Capacity as computed by statfs.' (Get-OptionalValue $u 'systemCapacityBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_cluster_system_used_bytes' 'Usage as computed by statfs.' (Get-OptionalValue $u 'systemUsageBytes' $null) (New-Label $l)
+        foreach ($io in @(@('read', 'numBytesRead', 'readIos', 'readLatencyMsecs'), @('write', 'numBytesWritten', 'writeIos', 'writeLatencyMsecs'))) {
+            $bytes = Get-OptionalValue $u $io[1] $null; $ios = Get-OptionalValue $u $io[2] $null; $lat = Get-OptionalValue $u $io[3] $null
+            Add-Metric 'cohesity_cluster_throughput_bytes_per_second' 'Cluster throughput over the last 30 seconds.' $(if ($null -ne $bytes) { [double]$bytes / 30 }) (New-Label $l 'op' $io[0])
+            Add-Metric 'cohesity_cluster_iops' 'Cluster I/O operations per second over the last 30 seconds.' $(if ($null -ne $ios) { [double]$ios / 30 }) (New-Label $l 'op' $io[0])
+            Add-Metric 'cohesity_cluster_latency_seconds' 'Cluster I/O latency over the last 30 seconds.' $(if ($null -ne $lat) { [double]$lat / 1000 }) (New-Label $l 'op' $io[0])
+        }
+        Add-Metric 'cohesity_cluster_data_reduction_ratio' 'Data reduction ratio (logical data in / physical data written), N:1.' (Get-Prop $r 'stats.dataReductionRatio' $null) (New-Label $l)
+        $d = Get-Prop $r 'stats.dataUsageStats' $null
+        foreach ($kind in @(@('data_in', 'dataInBytes'), @('data_in_after_dedup', 'dataInBytesAfterDedup'), @('data_written', 'dataWrittenBytes'),
+                            @('local_written', 'localDataWrittenBytes'), @('cloud_written', 'cloudDataWrittenBytes'), @('logical', 'totalLogicalUsageBytes'),
+                            @('consumed', 'storageConsumedBytes'), @('local_physical', 'localTotalPhysicalUsageBytes'), @('cloud_physical', 'cloudTotalPhysicalUsageBytes'))) {
+            Add-Metric 'cohesity_cluster_data_bytes' 'Cluster data usage by kind (data_in = before reduction; data_written = after dedupe and compression).' (Get-OptionalValue $d $kind[1] $null) (New-Label $l 'kind' $kind[0])
         }
     }
-    'physicaldevice' = {
+    'status' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/physicalresource/physicaldevice'
-        foreach ($d in (Get-DataArray $r 'physicaldevices')) {
-            if ((Get-OptionalValue $d 'type' '') -ne 'disk') { continue }
-            if ((Get-OptionalValue $d 'isforeign' $false) -eq $true) { continue }   # owned by the failover partner
-            $dl = [ordered]@{ server = $l.server; acsl = Get-OptionalValue $d 'acsl' ''; name = Get-OptionalValue $d 'name' ''
-                category = Get-OptionalValue $d 'category' ''; reservation = Get-OptionalValue $d 'reservation' '' }
-            Add-Metric 'cohesity_physicaldevice_size_bytes' 'Physical disk (LUN) size in bytes.' (Get-OptionalValue $d 'size' $null) $dl
-            Add-Metric 'cohesity_physicaldevice_used_bytes' 'Physical disk (LUN) used size in bytes.' (Get-OptionalValue $d 'used' $null) $dl
-            Add-Metric 'cohesity_physicaldevice_online' 'Physical disk (LUN) is online (1) or not (0).' ([int]((Get-CleanState (Get-OptionalValue $d 'status' '')) -eq 'online')) $dl
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/cluster/status"
+        $stopped = @(Get-Array $r 'stoppedServices')
+        Add-Metric 'cohesity_cluster_stopped_services' 'Cluster services that are stopped (0 on a healthy cluster).' $stopped.Count (New-Label $l)
+        foreach ($svc in $stopped) { Add-Metric 'cohesity_cluster_stopped_service' 'A stopped cluster service (value is always 1).' 1 (New-Label $l 'service' (ConvertTo-Env $svc)) }
+        Add-Metric 'cohesity_cluster_services_synced' 'Services are in sync across nodes (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $r 'servicesSynced' $null)) (New-Label $l)
+        $op = ConvertTo-Env (Get-OptionalValue $r 'currentOperation' 'kNone')
+        Add-Metric 'cohesity_cluster_operation' 'Operation in progress on the cluster (1 for the current label; none when idle).' 1 (New-Label $l 'operation' $op)
+        foreach ($n in @(Get-Array $r 'nodeStatuses')) {
+            $nl = New-Label $l 'node_id' (Get-OptionalValue $n 'id' '') 'ip' (Get-OptionalValue $n 'ip' '')
+            Add-Metric 'cohesity_node_in_cluster' 'Node is part of the cluster (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $n 'inCluster' $null)) $nl
+            Add-Metric 'cohesity_node_maintenance_mode' 'Node is in maintenance mode (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $n 'inMaintenanceMode' $null)) $nl
+            Add-Metric 'cohesity_node_marked_for_removal' 'Node is marked for removal (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $n 'markedForRemoval' $null)) $nl
+            Add-Metric 'cohesity_node_last_upgrade_timestamp_seconds' 'When the node was last upgraded (Unix time).' (Get-OptionalValue $n 'lastUpgradeTimeSecs' $null) $nl
+            Add-Metric 'cohesity_node_status_info' 'Node software version, active operation and uptime text (value is always 1).' 1 (New-Label $l 'node_id' (Get-OptionalValue $n 'id' '') 'ip' (Get-OptionalValue $n 'ip' '') `
+                'version' (Get-OptionalValue $n 'softwareVersion' '') 'operation' (ConvertTo-Env (Get-OptionalValue $n 'activeOperation' '')) 'uptime' (Get-OptionalValue $n 'uptime' ''))
         }
     }
-    'adapters' = {
+    'storage' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/physicalresource/physicaladapter'
-        foreach ($a in (Get-DataArray $r 'physicaladapters')) {
-            $al = New-Label $l 'adapter' (Get-OptionalValue $a 'id' '') 'vendor' (Get-OptionalValue $a 'vendor' '') 'type' (Get-OptionalValue $a 'type' '') 'mode' (Get-OptionalValue $a 'mode' '') 'wwpn' (Get-OptionalValue $a 'wwpn' '')
-            Add-Metric 'cohesity_adapter_paths' 'Paths through the physical adapter (FC/SCSI); a drop means lost storage paths.' (Get-OptionalValue $a 'paths' $null) $al
+        $r = Invoke-CohesityApi -Connection $c -Path '/v2/stats/cluster-storage'
+        Add-Metric 'cohesity_storage_capacity_bytes' 'Total capacity of the cluster.' (Get-OptionalValue $r 'totalCapacityBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_storage_used_bytes' 'Local storage in use.' (Get-OptionalValue $r 'localUsageBytes' $null) (New-Label $l)
+        Add-Metric 'cohesity_storage_available_bytes' 'Local storage available.' (Get-OptionalValue $r 'localAvailableBytes' $null) (New-Label $l)
+        foreach ($k in @(@('data_protect', 'logical', 'dataProtectionLogicalUsageBytes'), @('data_protect', 'physical', 'dataProtectionPhysicalUsageBytes'),
+                         @('file_services', 'logical', 'fileServicesLogicalUsageBytes'), @('file_services', 'physical', 'fileServicesPhysicalUsageBytes'))) {
+            Add-Metric 'cohesity_storage_service_bytes' 'Storage used by service (data protection, file services), logical and physical.' (Get-OptionalValue $r $k[2] $null) (New-Label $l 'service' $k[0] 'kind' $k[1])
         }
     }
-    'storagethreshold' = {
+    'nodes' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/storagethreshold'
-        Add-Metric 'cohesity_storage_threshold_percent' 'Configured system storage usage alert threshold (percent).' (Get-DataField $r 'threshold' $null) ([ordered]@{ server = $l.server })
-    }
-    'deduperepository' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/deduplication'
-        $d = Get-OptionalValue $r 'data' $null
-        Add-Metric 'cohesity_dedupe_repository_enabled' 'Deduplication Repository exists on this appliance (1) or not (0).' (ConvertTo-Flag (Get-Prop $d 'enabled' $false)) (New-Label $l)
-        if ((ConvertTo-Flag (Get-Prop $d 'enabled' $false)) -ne 1) { return }
-        Add-Metric 'cohesity_dedupe_repository_info' 'Deduplication Repository configuration (value is always 1).' 1 (New-Label $l 'cluster' (Get-Prop $d 'name' '') 'type' (Get-Prop $d 'type' '') 'mode' (Get-Prop $d 'mode' '') 'nodetype' (Get-Prop $d 'nodetype' '') 'encryption' (Get-Prop $d 'encryption' ''))
-        Add-Metric 'cohesity_dedupe_repository_failover_enabled' 'Standby node failover enabled for the repository.' (ConvertTo-Flag (Get-Prop $d 'failoverenabled' $null)) (New-Label $l)
-        $fs = Get-Prop $d 'failoverstatus' $null
-        if ($null -ne $fs) {
-            $st = Get-CleanState (Get-Prop $fs 'status' ''); if (-not $st) { $st = 'unknown' }
-            Add-Metric 'cohesity_dedupe_repository_failover_status' 'Repository failover status (1 for the current status label).' 1 (New-Label $l 'status' $st)
-            $orig = [string](Get-Prop $fs 'originalname' ''); $cur = [string](Get-Prop $fs 'currentname' '')
-            Add-Metric 'cohesity_dedupe_repository_taken_over' 'Standby node has taken over a failed node (original name differs from current name).' ([int]($orig -ne '' -and $cur -ne '' -and $orig -ne $cur)) (New-Label $l)
+        foreach ($n in @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/clusters/nodes?fetchStats=true') '')) {
+            $name = [string](Get-OptionalValue $n 'hostName' (Get-OptionalValue $n 'ip' (Get-OptionalValue $n 'id' '')))
+            $nl = New-Label $l 'node' $name
+            Add-Metric 'cohesity_node_info' 'Node identity, model and software version (value is always 1).' 1 (New-Label $l 'node' $name 'node_id' (Get-OptionalValue $n 'id' '') 'ip' (Get-OptionalValue $n 'ip' '') `
+                'version' (Get-OptionalValue $n 'nodeSoftwareVersion' '') 'model' (Get-OptionalValue $n 'productModel' '') 'hardware' (Get-OptionalValue $n 'hardwareModel' '') `
+                'serial' (Get-OptionalValue $n 'cohesityNodeSerial' '') 'type' (Get-OptionalValue $n 'nodeType' ''))
+            Add-Metric 'cohesity_node_offline_disks' 'Offline disks in the node.' (Get-OptionalValue $n 'offlineDiskCount' 0) $nl
+            Add-Metric 'cohesity_node_capacity_bytes' 'Maximum physical capacity of the node.' (Get-OptionalValue $n 'maxPhysicalCapacityBytes' $null) $nl
+            Add-Metric 'cohesity_node_used_bytes' 'Data stored on the node after reduction, including resiliency.' (Get-Prop $n 'stats.usagePerfStats.totalPhysicalUsageBytes' $null) $nl
+            Add-Metric 'cohesity_node_removal' 'Node removal state (1 for the current label; dontremove is normal).' 1 (New-Label $l 'node' $name 'state' (Get-CleanState (Get-OptionalValue $n 'removalState' 'DontRemove')))
+            foreach ($t in @(Get-Array $n 'diskCountByTier')) {
+                Add-Metric 'cohesity_node_disks' 'Disks in the node by storage tier.' (Get-OptionalValue $t 'count' $null) (New-Label $l 'node' $name 'tier' (Get-OptionalValue $t 'storageTier' ''))
+            }
         }
-        foreach ($node in @(Get-Prop $d 'nodes' @())) {
-            $nodeName = [string](Get-Prop $node 'name' '')
-            foreach ($role in @(@('datadisks', 'data'), @('indexes', 'index'), @('folders', 'folder'))) {
-                foreach ($disk in @(Get-Prop $node $role[0] @())) {
-                    $dl = New-Label $l 'node' $nodeName 'role' $role[1] 'name' (Get-Prop $disk 'name' '')
-                    Add-Metric 'cohesity_dedupe_repository_disk_size_bytes' 'Deduplication Repository device size in bytes (data, index or folder).' (Get-Prop $disk 'size' $null) $dl
-                    $id = Get-Prop $disk 'id' $null
-                    if ($null -ne $id) {
-                        try {
-                            $s = Invoke-CohesityApi -Connection $c -Path ('/logicalresource/status/{0}' -f $id)
-                            $status = Get-CleanState (Get-DataField $s 'status' '')
-                            Add-Metric 'cohesity_dedupe_repository_disk_online' 'Deduplication Repository device is online (1) or incomplete/offline (0).' ([int]($status -eq 'online')) $dl
-                        } catch { Write-Verbose "$($l.server): status of repository device ${id}: $($_.Exception.Message)" }
-                    }
+    }
+    'storagedomains' = {
+        param($c, $l, $x)
+        foreach ($d in @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/storage-domains?includeStats=true&includeTenants=true') 'storageDomains')) {
+            $name = [string](Get-OptionalValue $d 'name' '')
+            $dl = New-Label $l 'domain' $name
+            Add-Metric 'cohesity_storage_domain_info' 'Storage domain (View Box) settings (value is always 1).' 1 (New-Label $l 'domain' $name 'domain_id' (Get-OptionalValue $d 'id' '') `
+                'partition' (Get-OptionalValue $d 'clusterPartitionName' '') 'encryption' (Get-Prop $d 'storagePolicy.encryptionType' '') `
+                'node_failures_tolerated' (Get-Prop $d 'storagePolicy.numNodeFailuresTolerated' '') 'disk_failures_tolerated' (Get-Prop $d 'storagePolicy.numDiskFailuresTolerated' ''))
+            Add-Metric 'cohesity_storage_domain_quota_bytes' 'Physical quota (hard limit) of the storage domain.' (Get-Prop $d 'physicalQuota.hardLimitBytes' $null) $dl
+            Add-Metric 'cohesity_storage_domain_quota_alert_bytes' 'Physical quota alert limit of the storage domain.' (Get-Prop $d 'physicalQuota.alertLimitBytes' $null) $dl
+            $s = Get-OptionalValue $d 'stats' $null
+            foreach ($kind in @(@('logical', 'totalLogicalUsageBytes'), @('data_in', 'dataInBytes'), @('data_in_after_dedup', 'dataInBytesAfterDedup'),
+                                @('data_written', 'dataWrittenBytes'), @('local_physical', 'localTotalPhysicalUsageBytes'), @('cloud_physical', 'cloudTotalPhysicalUsageBytes'),
+                                @('consumed', 'storageConsumedBytes'), @('unique_physical', 'uniquePhysicalDataBytes'))) {
+                Add-Metric 'cohesity_storage_domain_bytes' 'Storage domain usage by kind (data_in before reduction, data_in_after_dedup after dedupe, data_written after dedupe and compression).' (Get-OptionalValue $s $kind[1] $null) (New-Label $l 'domain' $name 'kind' $kind[0])
+            }
+            Add-Metric 'cohesity_storage_domain_files' 'Files in the storage domain.' (Get-OptionalValue $s 'numFiles' $null) $dl
+        }
+    }
+    'alertstats' = {
+        param($c, $l, $x)
+        $r = Invoke-CohesityApi -Connection $c -Path ("$v1/stats/alerts?startTimeUsecs={0}&endTimeUsecs={1}" -f (Get-UsecsAgo 24), ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() * 1000))
+        foreach ($bucket in @(@('hardware', 'numHardware'), @('software', 'numSoftware'), @('dataservice', 'NumDataService'), @('maintenance', 'NumMaintenance'))) {
+            foreach ($sev in @('Critical', 'Warning', 'Info')) {
+                Add-Metric 'cohesity_alerts_active' 'Active alerts in the last 24 hours, by bucket and severity.' (Get-OptionalValue $r ($bucket[1] + $sev + 'Alerts') $null) (New-Label $l 'bucket' $bucket[0] 'severity' $sev.ToLowerInvariant())
+            }
+        }
+    }
+    'alerts' = { param($c, $l, $x); Invoke-AlertCheck $c $l $x }
+
+    # ---- Protection (every run) ----
+    'protectiongroups' = {
+        param($c, $l, $x)
+        $policyNames = Get-PolicyNames $c $x
+        $domainNames = Get-DomainNames $c $x
+        foreach ($g in (Get-Groups $c $x)) {
+            $name = [string](Get-OptionalValue $g 'name' '')
+            $gl = New-Label $l 'group' $name
+            $policyId = [string](Get-OptionalValue $g 'policyId' '')
+            $domainId = [string](Get-OptionalValue $g 'storageDomainId' '')
+            Add-Metric 'cohesity_group_info' 'Protection group: environment, policy and storage domain (value is always 1).' 1 (New-Label $l 'group' $name 'group_id' (Get-OptionalValue $g 'id' '') `
+                'env' (ConvertTo-Env (Get-OptionalValue $g 'environment' '')) 'policy' $(if ($policyNames.ContainsKey($policyId)) { $policyNames[$policyId] } else { $policyId }) `
+                'domain' $(if ($domainNames.ContainsKey($domainId)) { $domainNames[$domainId] } else { $domainId }) 'priority' (ConvertTo-Env (Get-OptionalValue $g 'priority' '')))
+            Add-Metric 'cohesity_group_active' 'Group is active (1) or an inactive replica copy (0).' (ConvertTo-Flag (Get-OptionalValue $g 'isActive' $null)) $gl
+            Add-Metric 'cohesity_group_paused' 'Group is paused: no new runs are scheduled (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $g 'isPaused' $null)) $gl
+            Add-Metric 'cohesity_group_protected_objects' 'Objects protected by the group.' (Get-OptionalValue $g 'numProtectedObjects' $null) $gl
+
+            $run = Get-OptionalValue $g 'lastRun' $null
+            if ($null -eq $run) { continue }
+            $b = Get-OptionalValue $run 'localBackupInfo' $null
+            if ($null -eq $b) { $b = Get-OptionalValue $run 'originalBackupInfo' $null }
+            if ($null -ne $b) {
+                $status = Get-CleanState (Get-OptionalValue $b 'status' '')
+                Add-Metric 'cohesity_group_last_run_status' 'Status of the group''s last backup run (1 for the current status label).' 1 (New-Label $l 'group' $name 'status' $status 'run_type' (ConvertTo-Env (Get-OptionalValue $b 'runType' '')))
+                Add-Metric 'cohesity_group_last_run_ok' 'The group''s last backup run succeeded, with or without warnings (1), is running (absent) or did not (0).' $(if ($status -in $activeRunStates) { $null } else { [int]($status -in @('succeeded', 'succeededwithwarning')) }) $gl
+                Add-Metric 'cohesity_group_last_run_sla_violated' 'The group''s last backup run violated its SLA (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $b 'isSlaViolated' $null)) $gl
+                Add-Metric 'cohesity_group_last_run_start_timestamp_seconds' 'Start of the group''s last backup run (Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $b 'startTimeUsecs' $null)) $gl
+                Add-Metric 'cohesity_group_last_run_end_timestamp_seconds' 'End of the group''s last backup run (Unix time; absent while it runs).' (ConvertFrom-Usecs (Get-OptionalValue $b 'endTimeUsecs' $null)) $gl
+                Add-Metric 'cohesity_group_last_run_duration_seconds' 'Duration of the group''s last finished backup run.' (Get-Duration (Get-OptionalValue $b 'startTimeUsecs' $null) (Get-OptionalValue $b 'endTimeUsecs' $null)) $gl
+                foreach ($result in @(@('successful', 'successfulObjectsCount'), @('failed', 'failedObjectsCount'), @('skipped', 'skippedObjectsCount'), @('cancelled', 'cancelledObjectsCount'))) {
+                    Add-Metric 'cohesity_group_last_run_objects' 'Objects in the group''s last backup run, by result.' (Get-OptionalValue $b $result[1] $null) (New-Label $l 'group' $name 'result' $result[0])
+                }
+                Add-Metric 'cohesity_group_last_run_logical_bytes' 'Logical size of the objects in the group''s last backup run.' (Get-Prop $b 'localSnapshotStats.logicalSizeBytes' $null) $gl
+                Add-Metric 'cohesity_group_last_run_read_bytes' 'Bytes read by the group''s last backup run.' (Get-Prop $b 'localSnapshotStats.bytesRead' $null) $gl
+                Add-Metric 'cohesity_group_last_run_written_bytes' 'Bytes written by the group''s last backup run (after reduction).' (Get-Prop $b 'localSnapshotStats.bytesWritten' $null) $gl
+            }
+            Add-RunTargetMetrics $l $name $run
+        }
+    }
+    'runs' = {
+        param($c, $l, $x)
+        $runs = Get-RunsSummary $c $x
+        $byGroupStatus = @{}; $byStatus = @{}; $written = @{}; $read = @{}; $sla = @{}
+        foreach ($s in @('succeeded', 'succeededwithwarning', 'failed', 'running', 'canceled', 'missed')) { $byStatus[$s] = 0 }
+        foreach ($r in $runs) {
+            $group = [string](Get-OptionalValue $r 'protectionGroupName' '')
+            $status = Get-CleanState (Get-OptionalValue $r 'status' '')
+            Add-Count $byGroupStatus ("{0}|{1}" -f $group, $status)
+            Add-Count $byStatus $status
+            Add-Count $written $group ([double](Get-OptionalValue $r 'bytesWritten' 0))
+            Add-Count $read $group ([double](Get-OptionalValue $r 'logicalSizeBytes' 0))
+            if ((ConvertTo-Flag (Get-OptionalValue $r 'isSlaViolated' $null)) -eq 1) { Add-Count $sla $group }
+        }
+        foreach ($s in $byStatus.Keys) { Add-Metric 'cohesity_runs_24h' 'Backup runs started in the last 24 hours, by status.' $byStatus[$s] (New-Label $l 'status' $s) }
+        foreach ($key in $byGroupStatus.Keys) {
+            $group, $status = $key.Split('|', 2)
+            Add-Metric 'cohesity_group_runs_24h' 'Backup runs of the group started in the last 24 hours, by status.' $byGroupStatus[$key] (New-Label $l 'group' $group 'status' $status)
+        }
+        foreach ($group in $written.Keys) {
+            Add-Metric 'cohesity_group_24h_written_bytes' 'Bytes written by the group''s runs in the last 24 hours.' $written[$group] (New-Label $l 'group' $group)
+            Add-Metric 'cohesity_group_24h_logical_bytes' 'Logical size protected by the group''s runs in the last 24 hours.' $read[$group] (New-Label $l 'group' $group)
+            Add-Metric 'cohesity_group_24h_sla_violations' 'Runs of the group in the last 24 hours that violated the SLA.' $(if ($sla.ContainsKey($group)) { $sla[$group] } else { 0 }) (New-Label $l 'group' $group)
+        }
+
+        # Runs in progress: one series set per run, with the time the collector first saw it.
+        $active = @($runs | Where-Object { (Get-CleanState (Get-OptionalValue $_ 'status' '')) -in $activeRunStates })
+        $firstSeen = Update-FirstSeen (Join-Path $config.StateDirectory ("runs-{0}.json" -f (Get-SafeFileName $l.cluster))) @($active | ForEach-Object { [string](Get-OptionalValue $_ 'id' '') })
+        Add-Metric 'cohesity_runs_active' 'Backup runs in progress.' $active.Count (New-Label $l)
+        foreach ($r in $active) {
+            $id = [string](Get-OptionalValue $r 'id' '')
+            $group = [string](Get-OptionalValue $r 'protectionGroupName' '')
+            $rl = New-Label $l 'group' $group 'run_id' $id
+            Add-Metric 'cohesity_run_info' 'A backup run in progress (value is always 1).' 1 (New-Label $l 'group' $group 'run_id' $id 'env' (ConvertTo-Env (Get-OptionalValue $r 'environment' '')) `
+                'status' (Get-CleanState (Get-OptionalValue $r 'status' '')) 'full' $(if ((ConvertTo-Flag (Get-OptionalValue $r 'isFullRun' $null)) -eq 1) { 'yes' } else { 'no' }))
+            Add-Metric 'cohesity_run_start_timestamp_seconds' 'Start of the run (Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $r 'startTimeUsecs' $null)) $rl
+            if ($firstSeen.Contains($id)) { Add-Metric 'cohesity_run_first_seen_timestamp_seconds' 'When the collector first saw the run in progress (Unix time).' $firstSeen[$id] $rl }
+            Add-Metric 'cohesity_run_objects' 'Objects in the run.' (Get-OptionalValue $r 'totalObjectsCount' $null) $rl
+            Add-Metric 'cohesity_run_objects_done' 'Objects of the run protected so far.' (Get-OptionalValue $r 'successObjectsCount' $null) $rl
+            Add-Metric 'cohesity_run_written_bytes' 'Bytes written by the run so far.' (Get-OptionalValue $r 'bytesWritten' $null) $rl
+            Add-Metric 'cohesity_run_logical_bytes' 'Logical size of the run.' (Get-OptionalValue $r 'logicalSizeBytes' $null) $rl
+        }
+    }
+    'runprogress' = {
+        param($c, $l, $x)
+        $active = @(Get-RunsSummary $c $x | Where-Object { (Get-CleanState (Get-OptionalValue $_ 'status' '')) -in $activeRunStates })
+        $detailed = 0
+        foreach ($r in ($active | Select-Object -First $maxRunDetails)) {
+            $id = [string](Get-OptionalValue $r 'id' '')
+            $group = [string](Get-OptionalValue $r 'protectionGroupName' '')
+            $p = Invoke-CohesityApi -Connection $c -Path ('/v2/data-protect/runs/{0}/progress' -f [uri]::EscapeDataString($id))
+            $detailed++
+            $parts = @()
+            $local = Get-OptionalValue $p 'localRun' $null
+            if ($null -ne $local) { $parts += , @('backup', '', $local) }
+            foreach ($t in @(Get-Array $p 'replicationRun')) { $parts += , @('replication', (Get-OptionalValue $t 'clusterName' ''), $t) }
+            foreach ($t in @(Get-Array $p 'archivalRun')) { $parts += , @('archive', (Get-OptionalValue $t 'targetName' ''), $t) }
+            foreach ($part in $parts) {
+                $pl = New-Label $l 'group' $group 'run_id' $id 'task' $part[0] 'target' $part[1]
+                Add-Metric 'cohesity_run_progress_percent' 'Progress of a running run''s task (backup, replication, archive), in percent.' (Get-OptionalValue $part[2] 'percentageCompleted' $null) $pl
+                Add-Metric 'cohesity_run_remaining_seconds' 'Expected remaining time of a running run''s task, as reported by the cluster.' (ConvertFrom-Usecs (Get-OptionalValue $part[2] 'expectedRemainingTimeUsecs' $null)) $pl
+            }
+        }
+        Add-Metric 'cohesity_runs_detailed' 'Running runs whose progress was read this run (capped).' $detailed (New-Label $l)
+    }
+    'sla' = {
+        param($c, $l, $x)
+        $r = Invoke-CohesityApi -Connection $c -Path ("$v1/stats/protectionRuns/lastRun?fromTimeSecs={0}" -f ((Get-UnixNow) - 7 * 86400))
+        Add-Metric 'cohesity_last_runs' 'Last run of every protection job (past 7 days), by result.' (Get-OptionalValue $r 'numRunsMetSla' $null) (New-Label $l 'result' 'met_sla')
+        Add-Metric 'cohesity_last_runs' 'Last run of every protection job (past 7 days), by result.' (Get-OptionalValue $r 'numRunsFailedSla' $null) (New-Label $l 'result' 'failed_sla')
+        Add-Metric 'cohesity_last_runs' 'Last run of every protection job (past 7 days), by result.' (Get-OptionalValue $r 'numRunsFailed' $null) (New-Label $l 'result' 'failed')
+        Add-Metric 'cohesity_last_runs_objects_failed' 'Objects that failed in the last run of every job.' (Get-OptionalValue $r 'numObjectsFailed' $null) (New-Label $l)
+        foreach ($e in @(Get-Array $r 'statsByEnv')) {
+            $env = ConvertTo-Env (Get-OptionalValue $e 'environment' '')
+            Add-Metric 'cohesity_last_runs_env_objects' 'Objects in the last run of every job, by environment and result.' (Get-OptionalValue $e 'numObjectsMetSla' $null) (New-Label $l 'env' $env 'result' 'met_sla')
+            Add-Metric 'cohesity_last_runs_env_objects' 'Objects in the last run of every job, by environment and result.' (Get-OptionalValue $e 'numObjectsFailedSla' $null) (New-Label $l 'env' $env 'result' 'failed_sla')
+            Add-Metric 'cohesity_last_runs_env_objects' 'Objects in the last run of every job, by environment and result.' (Get-OptionalValue $e 'numObjectsFailed' $null) (New-Label $l 'env' $env 'result' 'failed')
+        }
+    }
+    'failedobjects' = {
+        param($c, $l, $x)
+        # Objects that failed in the last run of groups whose last run failed or finished with warnings (capped).
+        $groups = @(Get-Groups $c $x | Where-Object {
+            (Get-CleanState (Get-Prop $_ 'lastRun.localBackupInfo.status' '')) -in @('failed', 'succeededwithwarning') } | Select-Object -First $maxFailedGroups)
+        $emitted = 0
+        foreach ($g in $groups) {
+            $name = [string](Get-OptionalValue $g 'name' '')
+            $r = Invoke-CohesityApi -Connection $c -Path ('/v2/data-protect/protection-groups/{0}/runs?numRuns=1&includeObjectDetails=true' -f [uri]::EscapeDataString([string](Get-OptionalValue $g 'id' '')))
+            foreach ($run in @(Get-Array $r 'runs' | Select-Object -First 1)) {
+                foreach ($o in @(Get-Array $run 'objects')) {
+                    $snap = Get-Prop $o 'localSnapshotInfo' $null
+                    $attempts = @(Get-Array $snap 'failedAttempts')
+                    $status = Get-CleanState (Get-Prop $snap 'snapshotInfo.status' '')
+                    $warnings = @(Get-Prop $snap 'snapshotInfo.warnings' @())
+                    $failed = $status -match 'fail' -or ($attempts.Count -gt 0 -and $status -notmatch 'succe')
+                    if (-not $failed -and $warnings.Count -eq 0) { continue }
+                    if ($emitted -ge $maxFailedObjects) { break }
+                    $emitted++
+                    $message = if ($attempts.Count -gt 0) { Get-OptionalValue $attempts[-1] 'message' '' } elseif ($warnings.Count -gt 0) { $warnings[0] } else { '' }
+                    $when = Get-Prop $snap 'snapshotInfo.endTimeUsecs' $null
+                    if ($null -eq $when -and $attempts.Count -gt 0) { $when = Get-OptionalValue $attempts[-1] 'endTimeUsecs' $null }
+                    Add-Metric 'cohesity_failed_object_info' 'Object that failed (or warned) in the last run of a group whose run failed or warned (value is the end time as Unix time, or 1).' `
+                        $(if ($null -ne (ConvertFrom-Usecs $when)) { ConvertFrom-Usecs $when } else { 1 }) (New-Label $l 'group' $name 'object' (Get-Prop $o 'object.name' '') `
+                        'env' (ConvertTo-Env (Get-Prop $o 'object.environment' '')) 'source' (Get-Prop $o 'object.sourceName' '') `
+                        'result' $(if ($failed) { 'failed' } else { 'warning' }) 'attempts' $attempts.Count 'message' (Get-ShortText $message))
                 }
             }
         }
-        Add-Metric 'cohesity_dedupe_repository_associated_servers' 'Servers associated with this deduplication cluster.' @(Get-Prop $d 'associatedservers' @()).Count (New-Label $l)
-        if ((Get-Prop $d 'type' '') -eq 'objectstorage') {
-            $o = Invoke-CohesityApi -Connection $c -Path '/deduplication/objectstorage'
-            Add-Metric 'cohesity_dedupe_repository_objectstorage_used_bytes' 'Object storage used by the repository per node, in bytes.' ([double](Get-DataField $o 'usedgb' 0) * 1GB) (New-Label $l 'account' (Get-DataField $o 'label' ''))
-            Add-Metric 'cohesity_dedupe_repository_objectstorage_size_bytes' 'Object storage size configured for the repository, in bytes.' ([double](Get-Prop $d 'objectstoragegb' 0) * 1GB) (New-Label $l)
+        Add-Metric 'cohesity_failed_objects_listed' 'Failed or warning objects listed this run (capped).' $emitted (New-Label $l)
+    }
+    'recoveries' = {
+        param($c, $l, $x)
+        $all = @(Get-Array (Invoke-CohesityApi -Connection $c -Path ('/v2/data-protect/recoveries?startTimeUsecs={0}&includeTenants=true' -f (Get-UsecsAgo 24))) 'recoveries')
+        $counts = @{}
+        foreach ($r in $all) { Add-Count $counts ("{0}|{1}" -f (Get-OptionalValue $r 'recoveryAction' ''), (Get-CleanState (Get-OptionalValue $r 'status' ''))) }
+        foreach ($key in $counts.Keys) {
+            $action, $status = $key.Split('|', 2)
+            Add-Metric 'cohesity_recoveries_24h' 'Recoveries started in the last 24 hours, by action and status.' $counts[$key] (New-Label $l 'action' $action 'status' $status)
+        }
+        $running = @($all | Where-Object { (Get-CleanState (Get-OptionalValue $_ 'status' '')) -in $activeRunStates })
+        Add-Metric 'cohesity_recoveries_active' 'Recoveries in progress.' $running.Count (New-Label $l)
+        foreach ($r in $running) {
+            Add-Metric 'cohesity_recovery_info' 'A recovery in progress (value is its start time as Unix time).' (ConvertFrom-Usecs (Get-OptionalValue $r 'startTimeUsecs' $null)) (New-Label $l `
+                'name' (Get-OptionalValue $r 'name' '') 'action' (Get-OptionalValue $r 'recoveryAction' '') 'env' (ConvertTo-Env (Get-OptionalValue $r 'snapshotEnvironment' '')) `
+                'status' (Get-CleanState (Get-OptionalValue $r 'status' '')) 'user' (Get-Prop $r 'creationInfo.userName' ''))
         }
     }
 
-    # ---- Deduplication ----
-    'reclamation' = {
-        # The API only reports idle/running/failed, so the collector tracks transitions to give each run a start,
-        # end and duration. Times are accurate to one collector interval.
+    # ---- Inventory (every 15 minutes) ----
+    'protectionsummary' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/deduplication/reclamation/status'
-        $statePath = Join-Path $config.StateDirectory ("maintenance-{0}.json" -f (Get-SafeFileName $l.server))
-        $saved = Read-JsonState $statePath
-        $state = [ordered]@{}
-        $now = Get-UnixNow
-        foreach ($process in @('reclaim', 'prune')) {
-            $status = Get-CleanState (Get-DataField $r ("{0}status" -f $process) '')
-            if (-not $status) { $status = 'notapplicable' }   # standby node or no repository
-            $pl = New-Label $l 'process' $process
-            Add-Metric 'cohesity_dedupe_maintenance_status' 'Space reclamation / index prune status (1 for the current status label).' 1 ([ordered]@{ server = $l.server; process = $process; status = $status })
-
-            $prev = Get-OptionalValue $saved $process $null
-            $entry = [ordered]@{ status = $status; runningSince = [long](Get-OptionalValue $prev 'runningSince' 0)
-                lastStart = [long](Get-OptionalValue $prev 'lastStart' 0); lastEnd = [long](Get-OptionalValue $prev 'lastEnd' 0)
-                lastResult = [string](Get-OptionalValue $prev 'lastResult' '') }
-            $prevStatus = [string](Get-OptionalValue $prev 'status' '')
-            if ($status -eq 'running' -and $prevStatus -ne 'running') {
-                $entry.runningSince = $now
-            } elseif ($status -ne 'running' -and $prevStatus -eq 'running') {
-                $entry.lastStart = $entry.runningSince; $entry.lastEnd = $now; $entry.lastResult = $status
-                $entry.runningSince = 0
-            }
-            $state[$process] = $entry
-
-            Add-Metric 'cohesity_dedupe_maintenance_running_since_timestamp_seconds' 'When the collector first saw the current reclamation/prune run (Unix time, 0 if not running).' $entry.runningSince $pl
-            if ($entry.lastEnd -gt 0) {
-                Add-Metric 'cohesity_dedupe_maintenance_last_run_start_timestamp_seconds' 'Start of the last completed reclamation/prune run seen by the collector (Unix time).' $entry.lastStart $pl
-                Add-Metric 'cohesity_dedupe_maintenance_last_run_end_timestamp_seconds' 'End of the last completed reclamation/prune run seen by the collector (Unix time).' $entry.lastEnd $pl
-                Add-Metric 'cohesity_dedupe_maintenance_last_run_duration_seconds' 'Duration of the last reclamation/prune run, to one collector interval.' ($entry.lastEnd - $entry.lastStart) $pl
-                Add-Metric 'cohesity_dedupe_maintenance_last_run_result' 'Status the last reclamation/prune run ended in (1 for the result label).' 1 (New-Label $l 'process' $process 'result' $entry.lastResult)
-            }
-        }
-        Write-JsonState $statePath $state
-    }
-    'dedupepolicy' = {
-        param($c, $l, $x)
-        foreach ($p in (Get-Policies $c $x)) {
-            $pl = [ordered]@{ server = $l.server; policy = Get-OptionalValue $p 'name' ''; trigger = Get-OptionalValue $p 'trigger' '' }
-            $sl = [ordered]@{ server = $l.server; policy = $pl.policy; status = Get-CleanState (Get-OptionalValue $p 'status' '') }
-            Add-Metric 'cohesity_dedupe_policy_status' 'Deduplication policy status (1 for the current status label).' 1 $sl
-            Add-Metric 'cohesity_dedupe_policy_suspended' 'Deduplication policy suspended (1) or not (0).' ([int]((Get-OptionalValue $p 'suspended' $false) -eq $true)) $pl
-            Add-Metric 'cohesity_dedupe_policy_tapes' 'Number of tapes in the deduplication policy.' (Get-OptionalValue $p 'tapes' $null) $pl
-            Add-Metric 'cohesity_dedupe_policy_last_run_timestamp_seconds' 'Last policy run (Unix time, 0 if not applicable).' (Get-OptionalValue $p 'lastrun' $null) $pl
-            Add-Metric 'cohesity_dedupe_policy_next_run_timestamp_seconds' 'Next scheduled policy run (Unix time, 0 if not applicable).' (Get-OptionalValue $p 'nextrun' $null) $pl
-            Add-Metric 'cohesity_dedupe_policy_info' 'Deduplication policy replication setup (value is always 1).' 1 (New-Label $l 'policy' $pl.policy 'cluster' (Get-OptionalValue $p 'cluster' '') 'replicationmode' (Get-OptionalValue $p 'replicationmode' 'none'))
-            foreach ($t in @(Get-OptionalValue $p 'targetservers' @())) {
-                Add-Metric 'cohesity_dedupe_policy_replication_suspended' 'Replication from the policy to the target server is suspended (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $t 'suspended' $false)) (New-Label $l 'policy' $pl.policy 'target' (Get-OptionalValue $t 'name' ''))
-            }
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/stats/protectionSummary"
+        Add-Metric 'cohesity_objects' 'Objects on registered sources, protected or not.' (Get-OptionalValue $r 'numObjectsProtected' $null) (New-Label $l 'protected' 'yes')
+        Add-Metric 'cohesity_objects' 'Objects on registered sources, protected or not.' (Get-OptionalValue $r 'numObjectsUnprotected' $null) (New-Label $l 'protected' 'no')
+        Add-Metric 'cohesity_object_bytes' 'Size of the objects on registered sources, protected or not.' (Get-OptionalValue $r 'protectedSizeBytes' $null) (New-Label $l 'protected' 'yes')
+        Add-Metric 'cohesity_object_bytes' 'Size of the objects on registered sources, protected or not.' (Get-OptionalValue $r 'unprotectedSizeBytes' $null) (New-Label $l 'protected' 'no')
+        foreach ($e in @(Get-Array $r 'statsByEnv')) {
+            $env = ConvertTo-Env (Get-OptionalValue $e 'envType' '')
+            Add-Metric 'cohesity_objects_by_env' 'Objects by environment, protected or not.' (Get-OptionalValue $e 'protectedCount' $null) (New-Label $l 'env' $env 'protected' 'yes')
+            Add-Metric 'cohesity_objects_by_env' 'Objects by environment, protected or not.' (Get-OptionalValue $e 'unprotectedCount' $null) (New-Label $l 'env' $env 'protected' 'no')
+            Add-Metric 'cohesity_object_bytes_by_env' 'Object size by environment, protected or not.' (Get-OptionalValue $e 'protectedSizeBytes' $null) (New-Label $l 'env' $env 'protected' 'yes')
+            Add-Metric 'cohesity_object_bytes_by_env' 'Object size by environment, protected or not.' (Get-OptionalValue $e 'unprotectedSizeBytes' $null) (New-Label $l 'env' $env 'protected' 'no')
         }
     }
-    'dedupehistory' = {
-        # Run history per policy: the latest run, the latest completed run's ratio and sizes, and 24-hour totals.
-        # Prometheus keeps these over time, which gives the ratio trend.
+    'sources' = {
         param($c, $l, $x)
-        $now = Get-UnixNow
-        foreach ($p in (Get-Policies $c $x)) {
-            $id = Get-OptionalValue $p 'id' $null
-            if ($null -eq $id) { continue }
-            $policy = Get-OptionalValue $p 'name' ''
-            $runs = @(Get-RunHistory $c $id ($now - 86400))
-            $day = $runs
-            if ($runs.Count -eq 0) { $runs = @(Get-RunHistory $c $id ($now - 30 * 86400)) }   # quiet policy: still find its last run
-
-            $byStatus = @{ completed = 0; failed = 0; canceled = 0 }
-            $scanned = 0.0; $unique = 0.0; $replData = 0.0; $replUnique = 0.0; $tapes = 0.0; $duration = 0.0
-            foreach ($run in $day) {
-                $st = Get-CleanState (Get-OptionalValue $run 'status' 'unknown')
-                Add-Count $byStatus $st
-                if ($st -eq 'completed') {
-                    $scanned += [double](Get-OptionalValue $run 'dedupedata' 0); $unique += [double](Get-OptionalValue $run 'uniquedata' 0)
-                    $replData += [double](Get-OptionalValue $run 'repldata' 0); $replUnique += [double](Get-OptionalValue $run 'replunique' 0)
-                    $tapes += [double](Get-OptionalValue $run 'tapes' 0); $duration += [double](Get-OptionalValue $run 'dedupeduration' 0)
-                }
-            }
-            foreach ($st in $byStatus.Keys) {
-                Add-Metric 'cohesity_dedupe_runs_24h' 'Deduplication policy runs in the last 24 hours, by status.' $byStatus[$st] (New-Label $l 'policy' $policy 'status' $st)
-            }
-            $pl = New-Label $l 'policy' $policy
-            Add-Metric 'cohesity_dedupe_24h_scanned_bytes' 'Data scanned by completed runs in the last 24 hours, in bytes.' ($scanned * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_24h_unique_bytes' 'Unique data written to the repository by completed runs in the last 24 hours, in bytes.' ($unique * 1MB) $pl
-            if ($unique -gt 0) { Add-Metric 'cohesity_dedupe_24h_ratio' 'Deduplication ratio of completed runs in the last 24 hours (scanned / unique, N:1).' ($scanned / $unique) $pl }
-            Add-Metric 'cohesity_dedupe_24h_replicated_bytes' 'Data replicated by completed runs in the last 24 hours, in bytes.' ($replData * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_24h_replicated_unique_bytes' 'Unique data sent to the replica by completed runs in the last 24 hours, in bytes.' ($replUnique * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_24h_tapes' 'Tapes processed by completed runs in the last 24 hours.' $tapes $pl
-            Add-Metric 'cohesity_dedupe_24h_duration_seconds' 'Total deduplication time of completed runs in the last 24 hours.' $duration $pl
-
-            $latest = $runs | Sort-Object { [long](Get-OptionalValue $_ 'timestamp' 0) } | Select-Object -Last 1
-            if ($null -ne $latest) {
-                Add-Metric 'cohesity_dedupe_run_last_timestamp_seconds' 'Start of the most recent policy run (Unix time).' (Get-OptionalValue $latest 'timestamp' $null) $pl
-                Add-Metric 'cohesity_dedupe_run_last_status' 'Status of the most recent policy run (1 for the current status label).' 1 (New-Label $l 'policy' $policy 'status' (Get-CleanState (Get-OptionalValue $latest 'status' 'unknown')) 'trigger' (Get-OptionalValue $latest 'trigger' ''))
-            }
-            $done = $runs | Where-Object { (Get-CleanState (Get-OptionalValue $_ 'status' '')) -eq 'completed' } | Sort-Object { [long](Get-OptionalValue $_ 'timestamp' 0) } | Select-Object -Last 1
-            if ($null -ne $done) {
-                $s = [double](Get-OptionalValue $done 'dedupedata' 0); $u = [double](Get-OptionalValue $done 'uniquedata' 0)
-                $ratio = if ($u -gt 0) { $s / $u } else { ConvertFrom-RatioText (Get-OptionalValue $done 'deduperatio' $null) }
-                Add-Metric 'cohesity_dedupe_completed_run_timestamp_seconds' 'Start of the most recent completed policy run (Unix time).' (Get-OptionalValue $done 'timestamp' $null) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_ratio' 'Deduplication ratio of the most recent completed run (N:1).' $ratio $pl
-                Add-Metric 'cohesity_dedupe_completed_run_scanned_bytes' 'Data scanned by the most recent completed run, in bytes.' ($s * 1MB) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_unique_bytes' 'Unique data from the most recent completed run, in bytes.' ($u * 1MB) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_tapes' 'Tapes in the most recent completed run.' (Get-OptionalValue $done 'tapes' $null) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_duration_seconds' 'Deduplication duration of the most recent completed run.' (Get-OptionalValue $done 'dedupeduration' $null) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_replicated_bytes' 'Data replicated by the most recent completed run, in bytes.' ([double](Get-OptionalValue $done 'repldata' 0) * 1MB) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_replicated_unique_bytes' 'Unique data sent to the replica by the most recent completed run, in bytes.' ([double](Get-OptionalValue $done 'replunique' 0) * 1MB) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_replication_ratio' 'Deduplication ratio on the replica after the most recent completed run (N:1).' (ConvertFrom-RatioText (Get-OptionalValue $done 'repldeduperatio' $null)) $pl
-                Add-Metric 'cohesity_dedupe_completed_run_replication_duration_seconds' 'Replication duration of the most recent completed run.' (Get-OptionalValue $done 'replduration' $null) $pl
-            }
+        # Never ask for includeSourceCredentials: this check only needs names, types and refresh state.
+        $regs = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/data-protect/sources/registrations?includeTenants=true') 'registrations')
+        $byEnv = @{}
+        foreach ($s in $regs) {
+            $env = ConvertTo-Env (Get-OptionalValue $s 'environment' '')
+            Add-Count $byEnv $env
+            $sl = New-Label $l 'source' (Get-OptionalValue $s 'name' '') 'env' $env
+            $auth = Get-CleanState (Get-Prop $s 'sourceInfo.authenticationStatus' (Get-OptionalValue $s 'authenticationStatus' ''))
+            Add-Metric 'cohesity_source_status' 'Registration and refresh status of a source (1 for the current label).' 1 (New-Label $l 'source' (Get-OptionalValue $s 'name' '') 'env' $env 'status' $auth)
+            $refreshed = Get-Prop $s 'sourceInfo.lastRefreshedTimeMsecs' (Get-OptionalValue $s 'lastRefreshedTimeMsecs' $null)
+            Add-Metric 'cohesity_source_last_refresh_timestamp_seconds' 'When the source was last refreshed (Unix time).' $(if ($null -ne $refreshed -and [double]$refreshed -gt 0) { [Math]::Floor([double]$refreshed / 1000) }) $sl
+            $registered = Get-Prop $s 'sourceInfo.registrationTimeMsecs' (Get-OptionalValue $s 'registrationTimeMsecs' $null)
+            Add-Metric 'cohesity_source_registered_timestamp_seconds' 'When the source was registered (Unix time).' $(if ($null -ne $registered -and [double]$registered -gt 0) { [Math]::Floor([double]$registered / 1000) }) $sl
+        }
+        foreach ($env in $byEnv.Keys) { Add-Metric 'cohesity_sources' 'Registered sources by environment.' $byEnv[$env] (New-Label $l 'env' $env) }
+    }
+    'externaltargets' = {
+        param($c, $l, $x)
+        foreach ($t in @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/data-protect/external-targets') 'externalTargets')) {
+            $status = Get-CleanState (Get-OptionalValue $t 'status' '')
+            Add-Metric 'cohesity_external_target_info' 'Archive or tiering target (value is always 1).' 1 (New-Label $l 'target' (Get-OptionalValue $t 'name' '') 'target_id' (Get-OptionalValue $t 'id' '') `
+                'purpose' (Get-OptionalValue $t 'purposeType' '') 'ownership' (Get-OptionalValue $t 'ownershipContext' '') 'status' $status 'worm' $(if ((ConvertTo-Flag (Get-OptionalValue $t 'isWormCapable' $null)) -eq 1) { 'yes' } else { 'no' }) `
+                'error' (Get-ShortText (Get-OptionalValue $t 'errorMessage' '')))
+            Add-Metric 'cohesity_external_target_registered' 'Target is registered (1) or unregistering/unregistered (0).' ([int]($status -eq 'registered')) (New-Label $l 'target' (Get-OptionalValue $t 'name' ''))
         }
     }
-    'dedupeactivity' = {
+    'vaultstats' = {
         param($c, $l, $x)
-        foreach ($p in (Get-Policies $c $x)) {
-            $id = Get-OptionalValue $p 'id' $null
-            if ($null -eq $id) { continue }
-            $policy = Get-OptionalValue $p 'name' ''
-            $d = Get-ActiveStatus $c $x $id
-            $scanStates = @{}; $scanTput = 0.0; $scanLeft = 0.0
-            foreach ($s in @(Get-Prop $d 'scan' @())) {
-                $st = Get-CleanState (Get-OptionalValue $s 'status' 'unknown')
-                Add-Count $scanStates $st
-                $scanTput += [double](Get-OptionalValue $s 'throughput' 0)
-                $scanLeft += [Math]::Max(0, [double](Get-OptionalValue $s 'datasize' 0) - [double](Get-OptionalValue $s 'scanned' 0))
-            }
-            $replPhases = @{}; $replTput = 0.0; $replLeft = 0.0; $replEta = 0.0
-            foreach ($t in @(Get-Prop $d 'replication' @())) {
-                Add-Count $replPhases (Get-CleanState (Get-OptionalValue $t 'phase' 'unknown'))
-                $replTput += [double](Get-OptionalValue $t 'throughput' 0)
-                $replLeft += [Math]::Max(0, [double](Get-OptionalValue $t 'replicated' 0) - [double](Get-OptionalValue $t 'transmitted' 0))
-                $replEta = [Math]::Max($replEta, [double](Get-OptionalValue $t 'remainingtime' 0))
-            }
-            $pl = New-Label $l 'policy' $policy
-            Add-Metric 'cohesity_dedupe_active_scans_total' 'Tapes the policy is scanning or has queued for scanning.' ($scanStates.Values | Measure-Object -Sum).Sum $pl
-            foreach ($st in $scanStates.Keys) { Add-Metric 'cohesity_dedupe_active_scans' 'Tapes in the policy scan list, by scan status.' $scanStates[$st] (New-Label $l 'policy' $policy 'status' $st) }
-            Add-Metric 'cohesity_dedupe_active_scan_throughput_bytes_per_second' 'Combined scan throughput of the policy, in bytes/s.' ($scanTput * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_active_scan_remaining_bytes' 'Data still to scan for tapes in the policy scan list, in bytes.' ($scanLeft * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_active_replications_total' 'Tapes the policy is replicating.' ($replPhases.Values | Measure-Object -Sum).Sum $pl
-            foreach ($ph in $replPhases.Keys) { Add-Metric 'cohesity_dedupe_active_replications' 'Tapes being replicated, by phase (index or unique).' $replPhases[$ph] (New-Label $l 'policy' $policy 'phase' $ph) }
-            Add-Metric 'cohesity_dedupe_active_replication_throughput_bytes_per_second' 'Combined replication throughput of the policy, in bytes/s.' ($replTput * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_active_replication_remaining_bytes' 'Data still to replicate for tapes being replicated, in bytes.' ($replLeft * 1MB) $pl
-            Add-Metric 'cohesity_dedupe_active_replication_remaining_seconds' 'Longest remaining replication time reported for a tape in the policy.' $replEta $pl
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/stats/vaults"
+        foreach ($p in @(@('aws', 'awsUsageBytes'), @('azure', 'azureUsageBytes'), @('gcp', 'gcpUsageBytes'), @('nas', 'nasUsageBytes'), @('oracle', 'oracleUsageBytes'), @('qstar', 'qstarUsageBytes'), @('s3c', 's3cUsageBytes'))) {
+            Add-Metric 'cohesity_archive_usage_bytes' 'Data stored on archive targets, by provider.' (Get-OptionalValue $r $p[1] $null) (New-Label $l 'provider' $p[0])
+        }
+        foreach ($v in @(Get-Array $r 'vaultStatsList')) {
+            Add-Metric 'cohesity_vault_usage_bytes' 'Data stored on an archive target.' (Get-OptionalValue $v 'usageBytes' $null) (New-Label $l 'target' (Get-OptionalValue $v 'name' '') 'type' (ConvertTo-Env (Get-OptionalValue $v 'type' '')))
         }
     }
-    'dedupequeue' = {
+    'views' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/vtl/activities/dedupequeue'
-        $jobs = @(Get-DataArray $r 'jobs')
-        $x.DedupeQueue = $jobs
-        $byState = @{}; $undeduped = 0.0; $throughput = 0.0
-        foreach ($j in $jobs) {
-            $state = Get-CleanState (Get-OptionalValue $j 'state' 'unknown')
-            Add-Count $byState $state
-            # The guide spells this field both 'undeduped' and 'undedupe'.
-            $undeduped += [double](Get-OptionalValue $j 'undedupeddatamb' (Get-OptionalValue $j 'undedupedatamb' 0))
-            $throughput += [double](Get-OptionalValue $j 'throughputmbps' 0)
+        $r = Invoke-CohesityApi -Connection $c -Path '/v2/file-services/views-summary'
+        foreach ($k in @(@('total', 'totalViews'), @('protected', 'protectedViews'), @('replicated_in', 'replicatedInViews'), @('replicated_out', 'replicatedOutViews'))) {
+            Add-Metric 'cohesity_views' 'SmartFiles views, by kind.' (Get-OptionalValue $r $k[1] $null) (New-Label $l 'kind' $k[0])
         }
-        Add-Metric 'cohesity_dedupe_queue_jobs_total' 'Tapes in the deduplication job queue.' $jobs.Count ([ordered]@{ server = $l.server })
-        foreach ($state in $byState.Keys) {
-            Add-Metric 'cohesity_dedupe_queue_jobs' 'Tapes in the deduplication job queue by state.' $byState[$state] ([ordered]@{ server = $l.server; state = $state })
+        foreach ($k in @(@('logical', 'logicalUsageBytes'), @('consumed', 'storageConsumedBytes'), @('written', 'dataWrittenBytes'))) {
+            Add-Metric 'cohesity_views_bytes' 'SmartFiles view usage, by kind.' (Get-OptionalValue $r $k[1] $null) (New-Label $l 'kind' $k[0])
         }
-        Add-Metric 'cohesity_dedupe_queue_undeduped_bytes' 'Data waiting to be deduplicated across queued jobs, in bytes.' ($undeduped * 1MB) ([ordered]@{ server = $l.server })
-        Add-Metric 'cohesity_dedupe_queue_throughput_bytes_per_second' 'Sum of current deduplication job throughput, in bytes/s.' ($throughput * 1MB) ([ordered]@{ server = $l.server })
+        Add-Metric 'cohesity_views_files' 'Files in all views.' (Get-OptionalValue $r 'numFiles' $null) (New-Label $l)
     }
-    'dedupejobs' = {
-        # One row per tape in the deduplication queue, with drive, progress and the replication leg per target.
+    'antivirus' = {
         param($c, $l, $x)
-        $jobs = if ($x.ContainsKey('DedupeQueue')) { @($x.DedupeQueue) } else { @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/vtl/activities/dedupequeue') 'jobs') }
-        $drives = Get-DriveNames $c $x
-        $keys = @($jobs | ForEach-Object { [string](Get-OptionalValue $_ 'id' (Get-OptionalValue $_ 'barcode' '')) })
-        $firstSeen = Update-FirstSeen (Join-Path $config.StateDirectory ("jobs-dedupe-{0}.json" -f (Get-SafeFileName $l.server))) $keys
-
-        # Scan and replication activity per policy, keyed by tape id / barcode.
-        $scanById = @{}; $replByBarcode = @{}
-        foreach ($p in (Get-Policies $c $x)) {
-            $policyId = Get-OptionalValue $p 'id' $null
-            if ($null -eq $policyId) { continue }
-            try { $d = Get-ActiveStatus $c $x $policyId } catch { Write-Verbose "$($l.server): activestatus ${policyId}: $($_.Exception.Message)"; continue }
-            foreach ($sc in @(Get-Prop $d 'scan' @())) { $scanById[[string](Get-OptionalValue $sc 'id' '')] = $sc }
-            foreach ($t in @(Get-Prop $d 'replication' @())) { $replByBarcode[[string](Get-OptionalValue $t 'barcode' '')] = $t }
+        $files = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/antivirus-service/infected-files?maxCount=1000') 'infectedFiles')
+        $counts = @{}
+        foreach ($f in $files) { Add-Count $counts ("{0}|{1}" -f (Get-OptionalValue $f 'viewName' ''), (Get-CleanState (Get-OptionalValue $f 'state' ''))) }
+        Add-Metric 'cohesity_av_infected_files_found' 'Infected files found by the antivirus service.' $files.Count (New-Label $l)
+        foreach ($key in $counts.Keys) {
+            $view, $state = $key.Split('|', 2)
+            Add-Metric 'cohesity_av_infected_files' 'Infected files by view and state.' $counts[$key] (New-Label $l 'view' $view 'state' $state)
         }
-        $x.ReplicationActive = $replByBarcode
-
-        $detailCalls = 0
-        foreach ($j in $jobs) {
-            $id = [string](Get-OptionalValue $j 'id' ''); $barcode = [string](Get-OptionalValue $j 'barcode' '')
-            $key = if ($id) { $id } else { $barcode }
-            $policy = [string](Get-OptionalValue $j 'policy' '')
-            $state = Get-CleanState (Get-OptionalValue $j 'state' 'unknown')
-            $detail = $null
-            if ($id -and $detailCalls -lt $maxJobDetails) {
-                $detailCalls++
-                try { $detail = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path ('/vtl/activities/dedupequeue/{0}' -f $id)) 'data' $null }
-                catch { Write-Verbose "$($l.server): dedupe job ${id}: $($_.Exception.Message)" }
-            }
-            $scan = if ($scanById.ContainsKey($id)) { $scanById[$id] } else { $null }
-            $jl = New-Label $l 'policy' $policy 'barcode' $barcode
-            Add-Metric 'cohesity_dedupe_job_info' 'Tape in the deduplication queue (value is always 1).' 1 (New-Label $l 'policy' $policy 'barcode' $barcode 'tape' (Get-OptionalValue $j 'name' '') 'state' $state `
-                'trigger' (Get-OptionalValue $detail 'trigger' '') 'drive' (Resolve-DriveName $drives (Get-OptionalValue $scan 'drivesn' (Get-OptionalValue $detail 'sourcedrive' ''))) `
-                'destination_drive' (Resolve-DriveName $drives (Get-OptionalValue $detail 'destinationdrive' '')) 'replicationmode' (Get-OptionalValue $detail 'replicationmode' '') 'parser' (Get-OptionalValue $scan 'parser' ''))
-            Add-Metric 'cohesity_dedupe_job_progress_percent' 'Deduplication job progress.' (Get-OptionalValue $j 'progress' (Get-OptionalValue $scan 'progress' $null)) $jl
-            Add-Metric 'cohesity_dedupe_job_throughput_bytes_per_second' 'Deduplication job throughput, in bytes/s.' ([double](Get-OptionalValue $j 'throughputmbps' (Get-OptionalValue $scan 'throughput' 0)) * 1MB) $jl
-            Add-Metric 'cohesity_dedupe_job_undeduped_bytes' 'Data on the tape still to deduplicate, in bytes.' ([double](Get-OptionalValue $j 'undedupeddatamb' (Get-OptionalValue $j 'undedupedatamb' 0)) * 1MB) $jl
-            Add-Metric 'cohesity_dedupe_job_first_seen_timestamp_seconds' 'When the collector first saw this job (Unix time); the API has no job start time.' $firstSeen[$key] $jl
-            if ($null -ne $scan) {
-                Add-Metric 'cohesity_dedupe_job_data_bytes' 'Data on the tape being scanned, in bytes.' ([double](Get-OptionalValue $scan 'datasize' 0) * 1MB) $jl
-                Add-Metric 'cohesity_dedupe_job_scanned_bytes' 'Data scanned so far, in bytes.' ([double](Get-OptionalValue $scan 'scanned' 0) * 1MB) $jl
-            }
-            foreach ($t in @(Get-OptionalValue $detail 'targetservers' @())) {
-                $target = [string](Get-OptionalValue $t 'name' '')
-                $repl = if ($replByBarcode.ContainsKey($barcode)) { $replByBarcode[$barcode] } else { $null }
-                $rl = New-Label $l 'queue' 'dedupe' 'barcode' $barcode 'target' $target
-                Add-Metric 'cohesity_replication_job_info' 'Replication job (value is always 1). queue=dedupe: replication leg of a deduplication job; classic: non-deduplicated tape; unique: incoming unique-data replication on the target.' 1 `
-                    (New-Label $l 'queue' 'dedupe' 'direction' 'outgoing' 'policy' $policy 'barcode' $barcode 'tape' (Get-OptionalValue $j 'name' '') 'source' $l.server 'target' $target 'targetip' (Get-OptionalValue $t 'ipaddress' '') `
-                        'state' (Get-CleanState (Get-OptionalValue $t 'replicationstatus' $state)) 'phase' (Get-CleanState (Get-OptionalValue $repl 'phase' '')) 'mode' (Get-OptionalValue $detail 'replicationmode' ''))
-                Add-Metric 'cohesity_replication_job_progress_percent' 'Replication job progress.' (Get-OptionalValue $t 'progress' (Get-OptionalValue $repl 'progress' $null)) $rl
-                Add-Metric 'cohesity_replication_job_throughput_bytes_per_second' 'Replication job throughput, in bytes/s.' ([double](Get-OptionalValue $t 'throughputmbps' (Get-OptionalValue $repl 'throughput' 0)) * 1MB) $rl
-                Add-Metric 'cohesity_replication_job_first_seen_timestamp_seconds' 'When the collector first saw this job (Unix time).' $firstSeen[$key] $rl
-                if ($null -ne $repl) {
-                    Add-Metric 'cohesity_replication_job_total_bytes' 'Data to replicate for the tape, in bytes.' ([double](Get-OptionalValue $repl 'replicated' 0) * 1MB) $rl
-                    Add-Metric 'cohesity_replication_job_transmitted_bytes' 'Data replicated so far, in bytes.' ([double](Get-OptionalValue $repl 'transmitted' 0) * 1MB) $rl
-                    Add-Metric 'cohesity_replication_job_remaining_seconds' 'Estimated time to complete the replication.' (Get-OptionalValue $repl 'remainingtime' $null) $rl
-                }
-            }
-        }
-        Add-Metric 'cohesity_dedupe_jobs_detailed' 'Dedupe jobs for which per-job detail was fetched this run (capped).' $detailCalls (New-Label $l)
     }
 
-    # ---- Replication ----
-    'replicationqueue' = {
+    # ---- Configuration (every 60 minutes) ----
+    'policies' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/vtl/activities/replicationqueue'
-        $jobs = @(Get-DataArray $r 'jobs')
-        $x.ClassicQueue = $jobs
-        $byState = @{}
-        foreach ($j in $jobs) { Add-Count $byState (Get-CleanState (Get-OptionalValue $j 'state' 'unknown')) }
-        Add-Metric 'cohesity_replication_queue_jobs_total' 'Replication jobs in the queue (queue=classic for non-deduplicated tapes, unique for deduplicated data).' $jobs.Count ([ordered]@{ server = $l.server; queue = 'classic' })
-        foreach ($state in $byState.Keys) {
-            Add-Metric 'cohesity_replication_queue_jobs' 'Replication jobs by state.' $byState[$state] ([ordered]@{ server = $l.server; queue = 'classic'; state = $state })
+        Get-PolicyNames $c $x | Out-Null
+        foreach ($p in $x.Policies) {
+            $pl = New-Label $l 'policy' (Get-OptionalValue $p 'name' '')
+            Add-Metric 'cohesity_policy_info' 'Protection policy (value is always 1).' 1 (New-Label $l 'policy' (Get-OptionalValue $p 'name' '') 'policy_id' (Get-OptionalValue $p 'id' '') `
+                'replicated' $(if ((ConvertTo-Flag (Get-OptionalValue $p 'isReplicated' $null)) -eq 1) { 'yes' } else { 'no' }) 'datalock' (Get-OptionalValue $p 'dataLock' ''))
+            Add-Metric 'cohesity_policy_groups' 'Protection groups using the policy.' (Get-OptionalValue $p 'numProtectionGroups' $null) $pl
+            Add-Metric 'cohesity_policy_protected_objects' 'Objects protected with the policy.' (Get-OptionalValue $p 'numProtectedObjects' $null) $pl
+            Add-Metric 'cohesity_policy_replication_targets' 'Replication targets in the policy.' (@(Get-Prop $p 'remoteTargetPolicy.replicationTargets' @()).Count) $pl
+            Add-Metric 'cohesity_policy_archive_targets' 'Archive targets in the policy.' (@(Get-Prop $p 'remoteTargetPolicy.archivalTargets' @()).Count) $pl
         }
     }
-    'uniquereplicationqueue' = {
+    'remoteclusters' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/vtl/activities/uniquereplicationqueue'
-        $jobs = @(Get-DataArray $r 'jobs')
-        $x.UniqueQueue = $jobs
-        $byState = @{}; $oldest = 0
-        foreach ($j in $jobs) {
-            Add-Count $byState (Get-CleanState (Get-OptionalValue $j 'status' 'unknown'))
-            $start = [long](Get-OptionalValue $j 'starttime' 0)
-            if ($start -gt 0 -and ($oldest -eq 0 -or $start -lt $oldest)) { $oldest = $start }
+        $remotes = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/remote-clusters') 'remoteClusters')
+        Add-Metric 'cohesity_remote_clusters' 'Registered remote (replication) clusters.' $remotes.Count (New-Label $l)
+        foreach ($r in $remotes) {
+            Add-Metric 'cohesity_remote_cluster_info' 'Registered remote cluster (value is always 1).' 1 (New-Label $l 'remote' (Get-OptionalValue $r 'clusterName' '') 'remote_id' (Get-OptionalValue $r 'clusterId' '') `
+                'purpose' ((@(Get-Array $r 'purpose') | ForEach-Object { [string]$_ }) -join ',') 'encryption' (Get-OptionalValue $r 'effectiveAesEncryptionMode' ''))
+            Add-Metric 'cohesity_remote_cluster_tls_enabled' 'TLS is enabled to the remote cluster (1) or not (0).' (ConvertTo-Flag (Get-OptionalValue $r 'tlsEnabled' $null)) (New-Label $l 'remote' (Get-OptionalValue $r 'clusterName' ''))
         }
-        Add-Metric 'cohesity_replication_queue_jobs_total' 'Replication jobs in the queue (queue=classic for non-deduplicated tapes, unique for deduplicated data).' $jobs.Count ([ordered]@{ server = $l.server; queue = 'unique' })
-        foreach ($state in $byState.Keys) {
-            Add-Metric 'cohesity_replication_queue_jobs' 'Replication jobs by state.' $byState[$state] ([ordered]@{ server = $l.server; queue = 'unique'; state = $state })
-        }
-        Add-Metric 'cohesity_unique_replication_oldest_job_start_timestamp_seconds' 'Start time of the oldest unique-data replication job in the queue (0 if empty).' $oldest ([ordered]@{ server = $l.server })
     }
-    'replicationsetting' = {
+    'consumers' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/vtl/activities/replicationqueue/setting'
-        $status = Get-CleanState (Get-DataField $r 'status' '')
-        Add-Metric 'cohesity_replication_suspended' 'Global non-deduplicated replication is suspended (1) or normal (0).' ([int]($status -eq 'suspended')) ([ordered]@{ server = $l.server })
-    }
-    'replicationjobs' = {
-        # Classic replication queue (outgoing, with target and retry details) and the unique-data queue
-        # (incoming replicas, with a real start time). Dedupe-leg replication rows come from 'dedupejobs'.
-        param($c, $l, $x)
-        $classic = if ($x.ContainsKey('ClassicQueue')) { @($x.ClassicQueue) } else { @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/vtl/activities/replicationqueue') 'jobs') }
-        $unique = if ($x.ContainsKey('UniqueQueue')) { @($x.UniqueQueue) } else { @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/vtl/activities/uniquereplicationqueue') 'jobs') }
-        $keys = @($classic | ForEach-Object { 'classic:' + [string](Get-OptionalValue $_ 'id' (Get-OptionalValue $_ 'barcode' '')) }) +
-                @($unique | ForEach-Object { 'unique:' + [string](Get-OptionalValue $_ 'sourcebarcode' '') + ':' + [string](Get-OptionalValue $_ 'replicabarcode' '') })
-        $firstSeen = Update-FirstSeen (Join-Path $config.StateDirectory ("jobs-replication-{0}.json" -f (Get-SafeFileName $l.server))) $keys
-        $replActive = if ($x.ContainsKey('ReplicationActive')) { $x.ReplicationActive } else { @{} }
-
-        $detailCalls = 0
-        foreach ($j in $classic) {
-            $id = [string](Get-OptionalValue $j 'id' ''); $barcode = [string](Get-OptionalValue $j 'barcode' '')
-            $key = 'classic:' + $(if ($id) { $id } else { $barcode })
-            $state = Get-CleanState (Get-OptionalValue $j 'state' 'unknown')
-            $queue = if ((Get-CleanState (Get-OptionalValue $j 'type' '')) -eq 'typededupe') { 'classic-dedupe' } else { 'classic' }
-            $detail = $null
-            if ($id -and $detailCalls -lt $maxJobDetails) {
-                $detailCalls++
-                try { $detail = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path ('/vtl/activities/replicationqueue/{0}' -f $id)) 'data' $null }
-                catch { Write-Verbose "$($l.server): replication job ${id}: $($_.Exception.Message)" }
-            }
-            $repl = if ($replActive.ContainsKey($barcode)) { $replActive[$barcode] } else { $null }
-            $targets = @(Get-OptionalValue $detail 'targetservers' @())
-            if ($targets.Count -eq 0) { $targets = @($null) }
-            foreach ($t in $targets) {
-                $target = [string](Get-OptionalValue $t 'name' '')
-                $rl = New-Label $l 'queue' $queue 'barcode' $barcode 'target' $target
-                Add-Metric 'cohesity_replication_job_info' 'Replication job (value is always 1). queue=dedupe: replication leg of a deduplication job; classic: non-deduplicated tape; unique: incoming unique-data replication on the target.' 1 `
-                    (New-Label $l 'queue' $queue 'direction' 'outgoing' 'policy' '' 'barcode' $barcode 'tape' (Get-OptionalValue $j 'name' '') 'source' $l.server 'target' $target 'targetip' (Get-OptionalValue $t 'ipaddress' '') `
-                        'state' $state 'phase' (Get-CleanState (Get-OptionalValue $repl 'phase' '')) 'mode' ((Get-CleanState (Get-OptionalValue $j 'mode' '')) -replace '^mode', ''))
-                Add-Metric 'cohesity_replication_job_first_seen_timestamp_seconds' 'When the collector first saw this job (Unix time).' $firstSeen[$key] $rl
-                Add-Metric 'cohesity_replication_job_next_retry_timestamp_seconds' 'Next retry of a waiting replication job (Unix time, 0 if none).' (Get-OptionalValue $detail 'nextretrytime' $null) $rl
-                Add-Metric 'cohesity_replication_job_retries_left' 'Retries left for the replication job.' (Get-OptionalValue $detail 'leftretrycount' $null) $rl
-                if ($null -ne $repl) {
-                    Add-Metric 'cohesity_replication_job_progress_percent' 'Replication job progress.' (Get-OptionalValue $repl 'progress' $null) $rl
-                    Add-Metric 'cohesity_replication_job_throughput_bytes_per_second' 'Replication job throughput, in bytes/s.' ([double](Get-OptionalValue $repl 'throughput' 0) * 1MB) $rl
-                    Add-Metric 'cohesity_replication_job_remaining_seconds' 'Estimated time to complete the replication.' (Get-OptionalValue $repl 'remainingtime' $null) $rl
-                }
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/stats/consumers?consumerType=kProtectionRuns&maxCount=1000&fetchProtectionPolicy=true"
+        foreach ($s in @(Get-Array $r 'statsList')) {
+            $name = [string](Get-OptionalValue $s 'name' '')
+            foreach ($kind in @(@('data_in', 'dataInBytes'), @('data_in_after_dedup', 'dataInBytesAfterDedup'), @('data_written', 'dataWrittenBytes'),
+                                @('local_physical', 'localTotalPhysicalUsageBytes'), @('cloud_physical', 'cloudTotalPhysicalUsageBytes'), @('consumed', 'storageConsumedBytes'))) {
+                Add-Metric 'cohesity_consumer_bytes' 'Storage consumed by each protection group (consumer), by kind.' (Get-Prop $s ('stats.' + $kind[1]) $null) (New-Label $l 'group' $name 'kind' $kind[0])
             }
         }
-        foreach ($u in $unique) {
-            $source = [string](Get-OptionalValue $u 'sourceserver' ''); $sb = [string](Get-OptionalValue $u 'sourcebarcode' ''); $rb = [string](Get-OptionalValue $u 'replicabarcode' '')
-            $key = 'unique:' + $sb + ':' + $rb
-            $rl = New-Label $l 'queue' 'unique' 'barcode' $sb 'target' $l.server
-            Add-Metric 'cohesity_replication_job_info' 'Replication job (value is always 1). queue=dedupe: replication leg of a deduplication job; classic: non-deduplicated tape; unique: incoming unique-data replication on the target.' 1 `
-                (New-Label $l 'queue' 'unique' 'direction' 'incoming' 'policy' (Get-OptionalValue $u 'policy' '') 'barcode' $sb 'tape' (Get-OptionalValue $u 'lvittape' '') 'source' $source 'target' $l.server 'targetip' '' `
-                    'state' (Get-CleanState (Get-OptionalValue $u 'status' 'unknown')) 'phase' 'unique' 'mode' '')
-            Add-Metric 'cohesity_replication_job_start_timestamp_seconds' 'Start of the unique-data replication job as reported by the appliance (Unix time).' (Get-OptionalValue $u 'starttime' $null) $rl
-            Add-Metric 'cohesity_replication_job_first_seen_timestamp_seconds' 'When the collector first saw this job (Unix time).' $firstSeen[$key] $rl
-        }
-        Add-Metric 'cohesity_replication_jobs_detailed' 'Classic replication jobs for which per-job detail was fetched this run (capped).' $detailCalls (New-Label $l)
     }
-
-    # ---- Virtual tape library ----
-    'virtuallibrary' = {
+    'license' = {
         param($c, $l, $x)
-        $x.Libraries = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtuallibrary') 'libraries')
-        foreach ($v in $x.Libraries) {
-            $vl = [ordered]@{ server = $l.server; library = Get-OptionalValue $v 'name' '' }
-            Add-Metric 'cohesity_vtl_slots' 'Virtual library slots.' (Get-OptionalValue $v 'slots' $null) $vl
-            Add-Metric 'cohesity_vtl_tapes' 'Virtual tapes in the library.' (Get-OptionalValue $v 'tapes' $null) $vl
-            Add-Metric 'cohesity_vtl_drives' 'Virtual tape drives in the library.' (Get-OptionalValue $v 'drives' $null) $vl
-            Add-Metric 'cohesity_vtl_loaded_drives' 'Virtual tape drives with a tape loaded.' (Get-OptionalValue $v 'loadeddrives' $null) $vl
+        $r = Invoke-CohesityApi -Connection $c -Path "$v1/licenseUsage"
+        foreach ($u in @(Get-Array $r 'licensedUsage')) {
+            $fl = New-Label $l 'feature' (Get-OptionalValue $u 'featureName' '')
+            Add-Metric 'cohesity_license_entitled_gib' 'Licensed (entitled) capacity per feature, GiB.' (Get-OptionalValue $u 'capacityGib' $null) $fl
+            Add-Metric 'cohesity_license_expiry_timestamp_seconds' 'When the feature licence expires (Unix time).' (Get-OptionalValue $u 'expiryTime' $null) $fl
         }
-    }
-    'virtualdrive' = {
-        param($c, $l, $x)
-        $drives = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtualdrive') 'drives')
-        Add-Metric 'cohesity_standalone_drives' 'Standalone virtual tape drives.' $drives.Count (New-Label $l)
-        foreach ($d in $drives) {
-            $dl = New-Label $l 'drive' (Get-OptionalValue $d 'name' '') 'barcode' (Get-Prop $d 'loadedtape.barcode' '')
-            Add-Metric 'cohesity_standalone_drive_loaded' 'Standalone virtual tape drive has a tape loaded (1) or is empty (0).' ([int]((Get-CleanState (Get-OptionalValue $d 'status' '')) -eq 'loaded')) $dl
-        }
-    }
-    'tapecaching' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/tle/tapecaching'
-        $tl = [ordered]@{ server = $l.server }
-        foreach ($pair in @(@('totaldiskmb', 'cohesity_virtualized_disk_size_bytes', 'Total virtualized disk space in bytes.'),
-                            @('useddiskmb', 'cohesity_virtualized_disk_used_bytes', 'Used virtualized disk space in bytes.'),
-                            @('unmigratedcachemb', 'cohesity_tapecaching_unmigrated_bytes', 'Tape caching data not yet migrated to physical tape, in bytes.'),
-                            @('reclaimablecachemb', 'cohesity_tapecaching_reclaimable_bytes', 'Tape caching data that can be reclaimed, in bytes.'))) {
-            $mb = Get-DataField $r $pair[0] $null
-            if ($null -ne $mb) { Add-Metric $pair[1] $pair[2] ([double]$mb * 1MB) $tl }
-        }
-    }
-    'tapeinventory' = {
-        # Full virtual tape list (paged), aggregated. Runs every 15 minutes.
-        param($c, $l, $x)
-        $libNames = Get-LibraryNames $c $x
-        $tapes = @(Get-CohesityPagedCollection -Connection $c -Path '/virtualtape' -CollectionName 'tapes' -Body @{ location = 'vtl' })
-        $now = Get-UnixNow
-        $byLoc = @{}; $sizeLoc = @{}; $usedLoc = @{}; $emptyLoc = @{}
-        $byLib = @{}; $sizeLib = @{}; $usedLib = @{}; $emptyLib = @{}
-        $status = @{}; $flags = @{}
-        $replica = @{}; $oldest = @{}; $newest = @{}; $stale = @{}
-        foreach ($t in $tapes) {
-            $loc = Get-CleanState (Get-Prop $t 'location.type' 'unknown'); if (-not $loc) { $loc = 'unknown' }
-            $size = [double](Get-OptionalValue $t 'sizemb' 0) * 1MB; $used = [double](Get-OptionalValue $t 'usedmb' 0) * 1MB
-            Add-Count $byLoc $loc; Add-Count $sizeLoc $loc $size; Add-Count $usedLoc $loc $used
-            if ($used -eq 0) { Add-Count $emptyLoc $loc }
-            if ($loc -in @('lib', 'libslot', 'libdrive')) {
-                $libId = [string](Get-OptionalValue $t 'parentlibvid' (Get-Prop $t 'location.libstdid' ''))
-                $lib = if ($libNames.ContainsKey($libId)) { $libNames[$libId] } else { "id $libId" }
-                Add-Count $byLib $lib; Add-Count $sizeLib $lib $size; Add-Count $usedLib $lib $used
-                if ($used -eq 0) { Add-Count $emptyLib $lib }
-            }
-            foreach ($field in @('devicestatus', 'dedupestatus', 'replstatus', 'vitstatus', 'encryptionstatus')) {
-                $v = Get-CleanState (Get-OptionalValue $t $field ''); if (-not $v) { $v = 'none' }
-                Add-Count $status "$field|$v"
-            }
-            foreach ($flag in @('worm', 'writeprotection', 'tapecaching', 'unmigratedcaching', 'directlink', 'migrate', 'isstub', 'replicationenabled')) {
-                if ((ConvertTo-Flag (Get-OptionalValue $t $flag $false)) -eq 1) { Add-Count $flags $flag }
-            }
-            if ($loc -eq 'replica') {
-                $src = [string](Get-OptionalValue $t 'source' 'unknown')
-                Add-Count $replica $src
-                $ts = [long](Get-OptionalValue $t 'replicated' 0)
-                foreach ($age in @(@('24h', 86400), @('48h', 172800), @('7d', 604800))) {
-                    if (-not $stale.ContainsKey("$src|$($age[0])")) { $stale["$src|$($age[0])"] = 0 }
-                    if ($ts -gt 0 -and ($now - $ts) -gt $age[1]) { $stale["$src|$($age[0])"]++ }
-                }
-                if ($ts -le 0) { Add-Count $stale "$src|never" }
-                elseif (-not $oldest.ContainsKey($src) -or $ts -lt $oldest[$src]) { $oldest[$src] = $ts }
-                if ($ts -gt 0 -and (-not $newest.ContainsKey($src) -or $ts -gt $newest[$src])) { $newest[$src] = $ts }
+        $used = @{}
+        $usage = Get-OptionalValue $r 'usage' $null
+        if ($null -ne $usage) {
+            foreach ($p in $usage.PSObject.Properties) {
+                foreach ($f in @($p.Value)) { Add-Count $used ([string](Get-OptionalValue $f 'featureName' '')) ([double](Get-OptionalValue $f 'currentUsageGiB' 0)) }
             }
         }
-        Add-Metric 'cohesity_tapes_total' 'Virtual tapes on the appliance (all locations).' $tapes.Count (New-Label $l)
-        foreach ($k in $byLoc.Keys) {
-            $ll = New-Label $l 'location' $k
-            Add-Metric 'cohesity_tapes' 'Virtual tapes by location (libslot, libdrive, vault, replica, ...).' $byLoc[$k] $ll
-            Add-Metric 'cohesity_tapes_size_bytes' 'Allocated size of virtual tapes by location, in bytes.' $sizeLoc[$k] $ll
-            Add-Metric 'cohesity_tapes_used_bytes' 'Used size of virtual tapes by location, in bytes.' $usedLoc[$k] $ll
-            Add-Metric 'cohesity_tapes_empty' 'Virtual tapes with no data written, by location.' $(if ($emptyLoc.ContainsKey($k)) { $emptyLoc[$k] } else { 0 }) $ll
+        foreach ($feature in $used.Keys) { Add-Metric 'cohesity_license_used_gib' 'Licensed capacity in use per feature, GiB.' $used[$feature] (New-Label $l 'feature' $feature) }
+        foreach ($o in @(Get-Array $r 'featureOverUsage')) {
+            Add-Metric 'cohesity_license_overused_gib' 'Capacity used beyond the licence per feature, GiB.' (Get-OptionalValue $o 'overusedGib' $null) (New-Label $l 'feature' (Get-OptionalValue $o 'featureName' ''))
         }
-        foreach ($k in $byLib.Keys) {
-            $ll = New-Label $l 'library' $k
-            Add-Metric 'cohesity_vtl_tape_size_bytes' 'Allocated size of the virtual tapes in the library, in bytes.' $sizeLib[$k] $ll
-            Add-Metric 'cohesity_vtl_tape_used_bytes' 'Used size of the virtual tapes in the library, in bytes.' $usedLib[$k] $ll
-            Add-Metric 'cohesity_vtl_tapes_empty' 'Virtual tapes in the library with no data written (scratch).' $(if ($emptyLib.ContainsKey($k)) { $emptyLib[$k] } else { 0 }) $ll
-        }
-        foreach ($k in $status.Keys) {
-            $parts = $k.Split('|')
-            Add-Metric 'cohesity_tapes_by_status' 'Virtual tapes by status field (devicestatus, dedupestatus, replstatus, vitstatus, encryptionstatus) and value.' $status[$k] (New-Label $l 'field' $parts[0] 'status' $parts[1])
-        }
-        foreach ($flag in @('worm', 'writeprotection', 'tapecaching', 'unmigratedcaching', 'directlink', 'migrate', 'isstub', 'replicationenabled')) {
-            Add-Metric 'cohesity_tapes_with_property' 'Virtual tapes with the property set (worm, writeprotection, replicationenabled, ...).' $(if ($flags.ContainsKey($flag)) { $flags[$flag] } else { 0 }) (New-Label $l 'property' $flag)
-        }
-        foreach ($src in $replica.Keys) {
-            $sl = New-Label $l 'source' $src
-            Add-Metric 'cohesity_replica_tapes' 'Replica tapes held on this appliance, by source server.' $replica[$src] $sl
-            if ($oldest.ContainsKey($src)) { Add-Metric 'cohesity_replica_oldest_replicated_timestamp_seconds' 'Oldest last-replication time among replica tapes from the source (Unix time).' $oldest[$src] $sl }
-            if ($newest.ContainsKey($src)) { Add-Metric 'cohesity_replica_newest_replicated_timestamp_seconds' 'Newest last-replication time among replica tapes from the source (Unix time).' $newest[$src] $sl }
-        }
-        foreach ($k in $stale.Keys) {
-            $parts = $k.Split('|')
-            Add-Metric 'cohesity_replica_tapes_not_replicated_within' 'Replica tapes whose last replication is older than the age (age=never: never replicated).' $stale[$k] (New-Label $l 'source' $parts[0] 'age' $parts[1])
-        }
-    }
-    'tapecachingreclaim' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/tle/reclaim/tapes'
-        $d = Get-OptionalValue $r 'data' $null
-        $count = @(Get-Prop $d 'vault' @()).Count
-        foreach ($lib in @(Get-Prop $d 'libs' @())) { $count += @(Get-Prop $lib 'tapes' @()).Count }
-        Add-Metric 'cohesity_tapecaching_reclaim_eligible_tapes' 'Migrated tapes whose cached disk space can be reclaimed.' $count (New-Label $l)
-    }
-
-    # ---- Physical tape and import/export ----
-    'physicallibrary' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/physicallibrary/status'
-        $d = Get-OptionalValue $r 'data' $null
-        $libraries = @(Get-Prop $d 'ptlstat' @()) + @(Get-Prop $d 'acslsptlstat' @())
-        Add-Metric 'cohesity_physical_libraries' 'Physical tape libraries attached to the appliance.' $libraries.Count (New-Label $l)
-        foreach ($lib in $libraries) {
-            $id = Get-OptionalValue $lib 'id' ''
-            $name = "id $id"; $driveNames = @{}
-            try {
-                $detail = Invoke-CohesityApi -Connection $c -Path ('/physicallibrary/{0}' -f $id)
-                $name = [string](Get-DataField $detail 'name' $name)
-                foreach ($dr in @(Get-Prop (Get-OptionalValue $detail 'data' $null) 'standardstat.ptdstat' @())) { $driveNames[[string](Get-OptionalValue $dr 'id' '')] = [string](Get-OptionalValue $dr 'name' '') }
-            } catch { Write-Verbose "$($l.server): physical library ${id} details: $($_.Exception.Message)" }
-            $ll = New-Label $l 'library' $name 'serialno' (Get-OptionalValue $lib 'serialno' '')
-            Add-Metric 'cohesity_physical_library_status' 'Physical tape library status (1 for the current status label).' 1 (New-Label $l 'library' $name 'status' (Get-CleanState (Get-OptionalValue $lib 'status' 'unknown')))
-            Add-Metric 'cohesity_physical_library_disabled' 'Physical tape library disabled for maintenance.' (ConvertTo-Flag (Get-OptionalValue $lib 'disabled' $false)) $ll
-            Add-Metric 'cohesity_physical_library_tapes' 'Tapes in the physical library.' (Get-OptionalValue $lib 'tapes' $null) $ll
-            Add-Metric 'cohesity_physical_library_loaded_tapes' 'Tapes loaded in physical library drives.' (Get-OptionalValue $lib 'loadedtapes' $null) $ll
-            Add-Metric 'cohesity_physical_library_slots' 'Slots in the physical library.' (Get-OptionalValue $lib 'slots' $null) $ll
-            foreach ($dr in @(Get-OptionalValue $lib 'ptdstat' @())) {
-                $driveId = [string](Get-OptionalValue $dr 'id' '')
-                $driveName = if ($driveNames.ContainsKey($driveId) -and $driveNames[$driveId]) { $driveNames[$driveId] } else { "id $driveId" }
-                Add-Metric 'cohesity_physical_drive_status' 'Physical tape drive status (1 for the current status label).' 1 (New-Label $l 'library' $name 'drive' $driveName 'status' (Get-CleanState (Get-OptionalValue $dr 'status' 'unknown')) 'barcode' (Get-OptionalValue $dr 'barcode' ''))
-                Add-Metric 'cohesity_physical_drive_disabled' 'Physical tape drive disabled.' (ConvertTo-Flag (Get-OptionalValue $dr 'disabled' $false)) (New-Label $l 'library' $name 'drive' $driveName)
-            }
-        }
-        foreach ($dr in @(Get-Prop $d 'saptdstat' @())) {
-            Add-Metric 'cohesity_physical_drive_status' 'Physical tape drive status (1 for the current status label).' 1 (New-Label $l 'library' 'standalone' 'drive' ("id {0}" -f (Get-OptionalValue $dr 'id' '')) 'status' (Get-CleanState (Get-OptionalValue $dr 'status' 'unknown')) 'barcode' (Get-OptionalValue $dr 'barcode' ''))
-        }
-    }
-    'iejob' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/activity/iejob'
-        $jobs = @(Get-DataArray $r 'jobs')
-        $byStatus = @{}; $byType = @{}; $transferred = 0.0; $oldest = 0
-        foreach ($j in $jobs) {
-            $st = Get-CleanState (Get-OptionalValue $j 'status' 'unknown')
-            Add-Count $byStatus $st
-            Add-Count $byType ("{0}|{1}" -f (Get-OptionalValue $j 'jobtype' 'unknown'), $st)
-            if ($st -eq 'running') {
-                $transferred += [double](Get-OptionalValue $j 'transferedmb' (Get-OptionalValue $j 'transferdmb' 0))
-                $start = [long](Get-OptionalValue $j 'starttime' 0)
-                if ($start -gt 0 -and ($oldest -eq 0 -or $start -lt $oldest)) { $oldest = $start }
-            }
-        }
-        Add-Metric 'cohesity_iejob_total' 'Tape import/export and object storage jobs in the queue.' $jobs.Count (New-Label $l)
-        foreach ($k in $byStatus.Keys) { Add-Metric 'cohesity_iejob_jobs' 'Import/export jobs by status.' $byStatus[$k] (New-Label $l 'status' $k) }
-        foreach ($k in $byType.Keys) { $p = $k.Split('|'); Add-Metric 'cohesity_iejob_jobs_by_type' 'Import/export jobs by job type and status.' $byType[$k] (New-Label $l 'jobtype' $p[0] 'status' $p[1]) }
-        Add-Metric 'cohesity_iejob_running_transferred_bytes' 'Data transferred so far by running import/export jobs, in bytes.' ($transferred * 1MB) (New-Label $l)
-        Add-Metric 'cohesity_iejob_oldest_running_start_timestamp_seconds' 'Start of the oldest running import/export job (0 if none).' $oldest (New-Label $l)
-    }
-
-    # ---- Event log (every run) ----
-    'eventlog' = {
-        param($c, $l, $x)
-        Invoke-EventLogCheck $c $l $x
-    }
-
-    # ---- Configuration and inventory (cached, see $checkIntervalMinutes) ----
-    'serverinfo' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/properties/info'
-        $d = Get-OptionalValue $r 'data' $null
-        $hostName = ''
-        try { $hostName = [string](Get-DataField (Invoke-CohesityApi -Connection $c -Path '/server/properties/host') 'hostname' '') } catch { Write-Verbose $_.Exception.Message }
-        $kernel = [string](Get-Prop $d 'kernelversion' ''); if ($kernel.Length -gt 80) { $kernel = $kernel.Substring(0, 80) }
-        Add-Metric 'cohesity_server_info' 'Appliance platform details (value is always 1).' 1 (New-Label $l 'hostname' $hostName 'role' (Get-Prop $d 'role' '') 'make' (Get-Prop $d 'make' '') 'model' (Get-Prop $d 'model' '') 'osversion' (Get-Prop $d 'osversion' '') 'kernel' $kernel 'virtual' (Get-Prop $d 'isvirtualappliance' '') 'cloud' (Get-Prop $d 'cloud' '') 'location' (Get-Prop $d 'location' '') 'description' (Get-Prop $d 'description' ''))
-        Add-Metric 'cohesity_server_memory_bytes' 'Appliance memory in bytes.' (Get-Prop $d 'memory' $null) (New-Label $l)
-        Add-Metric 'cohesity_server_swap_bytes' 'Appliance swap size in bytes.' (Get-Prop $d 'swap' $null) (New-Label $l)
-        Add-Metric 'cohesity_server_cpus' 'Appliance CPU count (logical processors listed by the API).' @(Get-Prop $d 'processor' @()).Count (New-Label $l)
-        Add-Metric 'cohesity_server_storsight_running' 'FalconStor StorSight (FMS) installed and running (1), installed and stopped (0).' $(if ((ConvertTo-Flag (Get-Prop $d 'fmsinstalled' $false)) -eq 1) { ConvertTo-Flag (Get-Prop $d 'fmsrunning' $false) } else { $null }) (New-Label $l)
     }
     'patches' = {
         param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/patches'
-        $list = @(Get-DataField $r 'patches' @())
-        Add-Metric 'cohesity_patches_installed' 'Patches applied to the appliance.' $list.Count (New-Label $l)
-        foreach ($p in $list) {
-            $desc = (([string](Get-OptionalValue $p 'desc' '')) -split "`n")[0].Trim(); if ($desc.Length -gt 120) { $desc = $desc.Substring(0, 120) }
-            Add-Metric 'cohesity_patch_info' 'Applied patch (value is always 1).' 1 (New-Label $l 'patch' (Get-OptionalValue $p 'name' '') 'description' $desc)
+        $applied = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/patch-management/applied-patches') '')
+        Add-Metric 'cohesity_patches_installed' 'Patches applied to the cluster.' $applied.Count (New-Label $l)
+        foreach ($p in $applied) {
+            $when = Get-OptionalValue $p 'appliedTimeMsecs' $null
+            Add-Metric 'cohesity_patch_info' 'Applied patch (value is the time it was applied as Unix time, or 1).' $(if ($null -ne $when -and [double]$when -gt 0) { [Math]::Floor([double]$when / 1000) } else { 1 }) (New-Label $l `
+                'service' (Get-OptionalValue $p 'service' (Get-OptionalValue $p 'component' '')) 'version' (Get-OptionalValue $p 'version' '') 'level' (Get-OptionalValue $p 'patchLevel' ''))
         }
-    }
-    'serveroptions' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/server/options') 'data' $null
-        foreach ($p in @($d.PSObject.Properties)) {
-            $flag = ConvertTo-Flag $p.Value
-            if ($null -ne $flag) { Add-Metric 'cohesity_server_option_enabled' 'Server-level option enabled (configrepo, failover, fctarget, iscsitarget, emailalerts, ndmp, ost, nas, ...).' $flag (New-Label $l 'option' $p.Name) }
-        }
-    }
-    'encryption' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/encryption') 'data' $null
-        foreach ($p in @($d.PSObject.Properties)) {
-            $flag = ConvertTo-Flag $p.Value
-            if ($null -ne $flag) { Add-Metric 'cohesity_encryption_option' 'Encryption support and state (supportencrypt, tapeencryptenabled, dedupencryptenabled, encryptionactive).' $flag (New-Label $l 'option' $p.Name) }
-        }
-    }
-    'failoverconfig' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/server/failover') 'data' $null
-        Add-Metric 'cohesity_failover_config_info' 'Failover configuration (value is always 1).' 1 (New-Label $l 'type' (Get-Prop $d 'type' 'none') 'partner' (Get-Prop $d 'partnername' '') 'partnerip' (Get-Prop $d 'partnerip' '') 'powercontrol' (Get-Prop $d 'powercontrol.type' ''))
-        Add-Metric 'cohesity_failover_selfcheck_interval_seconds' 'Failover self-health check interval (-1 when not applicable).' (Get-Prop $d 'selfcheckinterval' $null) (New-Label $l)
-        Add-Metric 'cohesity_failover_heartbeat_interval_seconds' 'Failover partner heartbeat interval (-1 when not applicable).' (Get-Prop $d 'heartbeatinterval' $null) (New-Label $l)
-        Add-Metric 'cohesity_failover_autorecovery_enabled' 'Automatic failback enabled.' (ConvertTo-Flag (Get-Prop $d 'autorecovery.enabled' $null)) (New-Label $l)
-    }
-    'network' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/server/properties/network') 'data' $null
-        foreach ($nic in @(Get-Prop $d 'nics' @())) {
-            $name = Get-OptionalValue $nic 'name' ''
-            # The guide spells the address list both 'ifcfg' and 'ifgcfg'.
-            $addresses = @(Get-OptionalValue $nic 'ifcfg' (Get-OptionalValue $nic 'ifgcfg' @()))
-            $ips = ($addresses | ForEach-Object { Get-OptionalValue $_ 'ipaddress' '' } | Where-Object { $_ }) -join ' '
-            Add-Metric 'cohesity_nic_speed_mbps' 'Network interface link speed in Mb/s.' (Get-OptionalValue $nic 'speed' $null) (New-Label $l 'nic' $name 'ipaddress' $ips)
-            Add-Metric 'cohesity_nic_mtu' 'Network interface MTU.' (Get-OptionalValue $nic 'mtu' $null) (New-Label $l 'nic' $name)
-            Add-Metric 'cohesity_nic_dhcp' 'Network interface uses DHCP.' (ConvertTo-Flag (Get-OptionalValue $nic 'dhcp' $null)) (New-Label $l 'nic' $name)
-        }
-        Add-Metric 'cohesity_network_info' 'Network settings (value is always 1).' 1 (New-Label $l 'domain' (Get-Prop $d 'domain' '') 'gateway' (Get-Prop $d 'gateway' '') 'dns' ((@(Get-Prop $d 'dns' @())) -join ' '))
-        foreach ($svc in @('ssh', 'sftp')) { Add-Metric 'cohesity_network_service_enabled' 'SSH / SFTP access enabled on the appliance.' (ConvertTo-Flag (Get-Prop $d $svc $null)) (New-Label $l 'service' $svc) }
-    }
-    'bonding' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/network/bonding'
-        foreach ($g in @(Get-DataField $r 'groups' @())) {
-            $gl = New-Label $l 'group' (Get-OptionalValue $g 'group' '') 'mode' (Get-OptionalValue $g 'mode' '') 'ipaddress' (Get-OptionalValue $g 'ipaddress' '')
-            Add-Metric 'cohesity_bond_members' 'Network interfaces in the bonded group.' @(Get-OptionalValue $g 'nics' @()).Count $gl
-        }
-    }
-    'ntp' = {
-        param($c, $l, $x)
-        $servers = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/server/properties/ntp') 'ntp')
-        Add-Metric 'cohesity_ntp_servers' 'NTP servers configured on the appliance.' $servers.Count (New-Label $l 'servers' ($servers -join ' '))
-    }
-    'dedupereplication' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/dedupereplication') 'data' $null
-        foreach ($dir in @(@('targets', 'outgoing'), @('sources', 'incoming'))) {
-            $list = @(Get-Prop $d $dir[0] @())
-            Add-Metric 'cohesity_dedupe_replication_partners' 'Deduplication replication partners (outgoing = targets, incoming = sources).' $list.Count (New-Label $l 'direction' $dir[1])
-            foreach ($p in $list) {
-                $ip = Get-OptionalValue $p 'ipaddress' ((@(Get-Prop $p 'tcpoptions.servers' @()) | ForEach-Object { Get-OptionalValue $_ 'ipaddress' '' }) -join ' ')
-                $pl = New-Label $l 'direction' $dir[1] 'partner' (Get-OptionalValue $p 'name' '') 'ipaddress' $ip 'protocol' (Get-CleanState (Get-OptionalValue $p 'protocol' '')) 'encryption' (Get-Prop $p 'tcpoptions.encryption' '')
-                Add-Metric 'cohesity_dedupe_replication_partner_info' 'Deduplication replication partner (value is always 1).' 1 $pl
-                Add-Metric 'cohesity_dedupe_replication_connections' 'TCP connections configured for incoming replication from the partner.' (Get-Prop $p 'tcpoptions.connections' $null) (New-Label $l 'direction' $dir[1] 'partner' (Get-OptionalValue $p 'name' ''))
-                Add-Metric 'cohesity_dedupe_replication_timeout_seconds' 'Replication connection timeout for the partner.' (Get-Prop $p 'tcpoptions.timeout' $null) (New-Label $l 'direction' $dir[1] 'partner' (Get-OptionalValue $p 'name' ''))
-            }
-        }
-    }
-    'lvitsource' = {
-        param($c, $l, $x)
-        $list = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/virtualtape/lvitsource') 'sources')
-        foreach ($s in $list) { Add-Metric 'cohesity_replica_source_info' 'Server that replicates deduplicated tapes to this appliance (value is always 1).' 1 (New-Label $l 'source' (Get-OptionalValue $s 'name' '') 'ipaddress' (Get-OptionalValue $s 'ipaddress' '')) }
-    }
-    'reclamationpolicy' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/deduplication/reclamation') 'data' $null
-        Add-Metric 'cohesity_reclamation_policy_enabled' 'Space reclamation trigger enabled (usage = disk-usage based, schedule = scheduled).' (ConvertTo-Flag (Get-Prop $d 'usage.enabled' $null)) (New-Label $l 'trigger' 'usage')
-        Add-Metric 'cohesity_reclamation_policy_enabled' 'Space reclamation trigger enabled (usage = disk-usage based, schedule = scheduled).' (ConvertTo-Flag (Get-Prop $d 'schedule.enabled' $null)) (New-Label $l 'trigger' 'schedule')
-        Add-Metric 'cohesity_reclamation_usage_check_interval_seconds' 'Disk-usage reclamation check interval.' $(if ($null -ne (Get-Prop $d 'usage.interval' $null)) { [double](Get-Prop $d 'usage.interval' 0) * 60 }) (New-Label $l)
-        $days = (@(Get-Prop $d 'schedule.weekdays' @()) | ForEach-Object { @('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat')[[int]$_] }) -join ','
-        Add-Metric 'cohesity_reclamation_schedule_info' 'Scheduled reclamation days and start time (value is always 1).' 1 (New-Label $l 'weekdays' $days 'starttime' (Get-Prop $d 'schedule.starttime' ''))
-    }
-    'dedupecleanup' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/deduplication/cleanup'
-        Add-Metric 'cohesity_dedupe_cleanup_needed' 'Unused deduplication repositories need cleaning up (1) or not (0).' (ConvertTo-Flag (Get-DataField $r 'cleandisk' $null)) (New-Label $l)
-    }
-    'tleproperties' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/tle/properties'
-        Add-Metric 'cohesity_vtl_compression_enabled' 'VTL software compression enabled.' (ConvertTo-Flag (Get-DataField $r 'compression' $null)) (New-Label $l)
-        Add-Metric 'cohesity_vtl_retain_tape_enabled' 'VTL retain-tape property enabled.' (ConvertTo-Flag (Get-DataField $r 'retaintape' $null)) (New-Label $l)
-        Add-Metric 'cohesity_tapecaching_reclamation_threshold_percent' 'Disk usage that triggers tape caching space reclamation.' (Get-DataField $r 'reclamationthreshold' $null) (New-Label $l)
-        Add-Metric 'cohesity_tapecaching_migration_threshold_percent' 'Disk usage that triggers migration to physical tape.' (Get-DataField $r 'migrationthreshold' $null) (New-Label $l)
-    }
-    'iejobproperties' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/activity/iejob/properties'
-        Add-Metric 'cohesity_iejob_retry_enabled' 'Import/export job retry enabled.' (ConvertTo-Flag (Get-DataField $r 'retry' $null)) (New-Label $l)
-        Add-Metric 'cohesity_iejob_retry_count' 'Import/export job retries.' (Get-DataField $r 'retrycount' $null) (New-Label $l)
-        Add-Metric 'cohesity_iejob_retry_interval_seconds' 'Wait between import/export job retries.' $(if ($null -ne (Get-DataField $r 'retryinterval' $null)) { [double](Get-DataField $r 'retryinterval' 0) * 60 }) (New-Label $l)
-    }
-    'activitydatabase' = {
-        param($c, $l, $x)
-        $r = Invoke-CohesityApi -Connection $c -Path '/server/activitydatabase'
-        Add-Metric 'cohesity_activity_db_max_bytes' 'Maximum size of the activity database file, in bytes.' $(if ($null -ne (Get-DataField $r 'maxsize' $null)) { [double](Get-DataField $r 'maxsize' 0) * 1MB }) (New-Label $l)
-        Add-Metric 'cohesity_activity_db_max_days' 'Days of activity kept in the activity database.' (Get-DataField $r 'maxdays' $null) (New-Label $l)
-    }
-    'clients' = {
-        param($c, $l, $x)
-        $clients = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/client') 'clients')
-        Add-Metric 'cohesity_clients' 'SAN clients defined on the appliance, by protocol.' @($clients | Where-Object { (ConvertTo-Flag (Get-OptionalValue $_ 'fcenabled' $false)) -eq 1 }).Count (New-Label $l 'protocol' 'fc')
-        Add-Metric 'cohesity_clients' 'SAN clients defined on the appliance, by protocol.' @($clients | Where-Object { (ConvertTo-Flag (Get-OptionalValue $_ 'iscsienabled' $false)) -eq 1 }).Count (New-Label $l 'protocol' 'iscsi')
-        Add-Metric 'cohesity_clients_total' 'SAN clients defined on the appliance.' $clients.Count (New-Label $l)
-    }
-    'fcinitiators' = {
-        param($c, $l, $x)
-        $list = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/physicalresource/physicaladapter/fcclientinitiators') 'initiators')
-        $by = @{}
-        foreach ($i in $list) { $a = Get-CleanState (Get-OptionalValue $i 'assigned' ''); if (-not $a) { $a = 'unassigned' }; Add-Count $by $a }
-        foreach ($k in @('client', 'adapter', 'unassigned')) { Add-Metric 'cohesity_fc_initiators' 'FC initiator WWPNs seen by the appliance, by assignment (client, adapter, unassigned).' $(if ($by.ContainsKey($k)) { $by[$k] } else { 0 }) (New-Label $l 'assigned' $k) }
-    }
-    'iscsi' = {
-        param($c, $l, $x)
-        $targets = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/client/iscsitarget') 'iscsitargets')
-        Add-Metric 'cohesity_iscsi_targets' 'iSCSI targets defined on the appliance.' $targets.Count (New-Label $l)
-        $inits = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/client/iscsiclientinitiators') 'initiators')
-        Add-Metric 'cohesity_iscsi_initiators' 'iSCSI initiators seen by the appliance, by assignment.' @($inits | Where-Object { (ConvertTo-Flag (Get-OptionalValue $_ 'assigned' $false)) -eq 1 }).Count (New-Label $l 'assigned' 'true')
-        Add-Metric 'cohesity_iscsi_initiators' 'iSCSI initiators seen by the appliance, by assignment.' @($inits | Where-Object { (ConvertTo-Flag (Get-OptionalValue $_ 'assigned' $false)) -ne 1 }).Count (New-Label $l 'assigned' 'false')
-    }
-    'hostedbackup' = {
-        param($c, $l, $x)
-        $devices = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/client/hostedbackup') 'devices')
-        $by = @{}
-        foreach ($d in $devices) { Add-Count $by (Get-CleanState (Get-OptionalValue $d 'type' 'unknown')) }
-        foreach ($k in $by.Keys) { Add-Metric 'cohesity_hosted_backup_devices' 'Devices assigned for hosted backup, by type (lib, drive, sadrive, sirdrive).' $by[$k] (New-Label $l 'type' $k) }
-        Add-Metric 'cohesity_hosted_backup_devices_total' 'Devices assigned for hosted backup.' $devices.Count (New-Label $l)
-    }
-    'users' = {
-        param($c, $l, $x)
-        $users = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/user/account') 'users')
-        $names = @{ A = 'administrator'; S = 'standard'; R = 'readonly'; I = 'iscsi' }
-        $by = @{}
-        foreach ($u in $users) { $t = [string](Get-OptionalValue $u 'type' '?'); Add-Count $by $(if ($names.ContainsKey($t)) { $names[$t] } else { $t }) }
-        foreach ($k in $by.Keys) { Add-Metric 'cohesity_user_accounts' 'Appliance user accounts by type (names are not exported).' $by[$k] (New-Label $l 'type' $k) }
-    }
-    'objectstorage' = {
-        param($c, $l, $x)
-        $accounts = @(Get-DataArray (Invoke-CohesityApi -Connection $c -Path '/objectstorage') 'accounts')
-        $by = @{}
-        foreach ($a in $accounts) { Add-Count $by (Get-CleanState (Get-OptionalValue $a 'provider' 'unknown')) }
-        Add-Metric 'cohesity_objectstorage_accounts_total' 'Object storage accounts configured.' $accounts.Count (New-Label $l)
-        foreach ($k in $by.Keys) { Add-Metric 'cohesity_objectstorage_accounts' 'Object storage accounts by provider.' $by[$k] (New-Label $l 'provider' $k) }
-    }
-    'syslogalert' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/server/syslogalert') 'data' $null
-        Add-Metric 'cohesity_syslog_alert_enabled' 'System log pattern monitoring (email alerts) enabled.' (ConvertTo-Flag (Get-Prop $d 'enabled' $null)) (New-Label $l)
-        Add-Metric 'cohesity_syslog_alert_patterns' 'System log alert patterns configured.' @(Get-Prop $d 'incidents' @()).Count (New-Label $l)
-        Add-Metric 'cohesity_syslog_alert_check_interval_seconds' 'System log check interval.' $(if ($null -ne (Get-Prop $d 'frequency' $null)) { [double](Get-Prop $d 'frequency' 0) * 60 }) (New-Label $l)
-    }
-    'autosave' = {
-        param($c, $l, $x)
-        $d = Get-OptionalValue (Invoke-CohesityApi -Connection $c -Path '/server/properties/autosavetoftp') 'data' $null
-        Add-Metric 'cohesity_config_autosave_enabled' 'Automatic save of the appliance configuration to FTP enabled.' (ConvertTo-Flag (Get-Prop $d 'enabled' $null)) (New-Label $l 'interval' (Get-Prop $d 'interval' '') 'ftpserver' (Get-Prop $d 'ftpserver' ''))
-        Add-Metric 'cohesity_config_autosave_copies' 'Configuration copies kept on FTP.' (Get-Prop $d 'copies' $null) (New-Label $l)
+        $available = @(Get-Array (Invoke-CohesityApi -Connection $c -Path '/v2/patch-management/available-patches') '')
+        Add-Metric 'cohesity_patches_available' 'Patches available to apply (downloaded to the cluster).' $available.Count (New-Label $l)
     }
 }
 
 # Minutes between runs of the slower checks; anything not listed runs every time.
 $checkIntervalMinutes = @{
-    tapeinventory = 15; tapecachingreclaim = 15
-    serverinfo = 60; patches = 60; serveroptions = 60; encryption = 60; failoverconfig = 60; network = 60; bonding = 60; ntp = 60
-    dedupereplication = 60; lvitsource = 60; reclamationpolicy = 60; dedupecleanup = 60; tleproperties = 60; iejobproperties = 60
-    activitydatabase = 60; clients = 60; fcinitiators = 60; iscsi = 60; hostedbackup = 60; users = 60; objectstorage = 60
-    syslogalert = 60; autosave = 60
+    protectionsummary = 15; sources = 15; externaltargets = 15; vaultstats = 15; views = 15; antivirus = 15
+    policies = 60; remoteclusters = 60; consumers = 60; license = 60; patches = 60
 }
 $disabledChecks = @($config.DisabledChecks | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
-if (-not $config.CollectEventLog) { $disabledChecks += 'eventlog' }
+if (-not $config.CollectAlerts) { $disabledChecks += 'alerts' }
 foreach ($name in $disabledChecks) { if (-not $checks.Contains($name)) { Write-Warning "DisabledChecks: unknown check '$name' (known: $($checks.Keys -join ', '))" } }
 
 # ---------------------------------------------------------------------------
@@ -1334,8 +920,8 @@ function Write-MetricsFile {
 function Get-ServerMetricsFileName { param([string]$Name) return ("cohesity-{0}.prom" -f (Get-SafeFileName $Name)) }
 
 # ---------------------------------------------------------------------------
-# Parallel mode: one child process per appliance, each writing its own .prom file.
-# windows_exporter reads every *.prom in the directory, so the files add up to one scrape.
+# Parallel mode: one child process per cluster, each writing its own .prom file.
+# The exporter reads every *.prom in the directory, so the files add up to one scrape.
 # ---------------------------------------------------------------------------
 $isChild = [bool]$env:COHESITY_COLLECTOR_CHILD
 if ($MaxParallel -le 0) { $MaxParallel = if ($selectedServers.Count -le 2) { 1 } else { [Math]::Min(8, [Math]::Ceiling($selectedServers.Count / 4.0)) } }
@@ -1372,11 +958,11 @@ if ($MaxParallel -gt 1 -and $selectedServers.Count -gt 1 -and -not $isChild) {
         foreach ($proc in $running.Values) { try { $proc.Kill() } catch { } }
     }
 
-    # Summary file: the collector's own metrics, plus per-appliance exit codes. Stale per-server files are removed.
+    # Summary file: the collector's own metrics, plus per-cluster exit codes. Stale per-cluster files are removed.
     foreach ($name in $exitCodes.Keys) {
-        Add-Metric 'cohesity_collector_server_exit_code' 'Exit code of the per-appliance collector process (0 OK, 2 a check failed, 3 config error).' $exitCodes[$name] ([ordered]@{ server = $name })
+        Add-Metric 'cohesity_collector_server_exit_code' 'Exit code of the per-cluster collector process (0 OK, 2 a check failed, 3 config error).' $exitCodes[$name] ([ordered]@{ cluster = $name })
     }
-    Add-Metric 'cohesity_collector_parallel_processes' 'Appliance collector processes run at a time.' $MaxParallel @{}
+    Add-Metric 'cohesity_collector_parallel_processes' 'Cluster collector processes run at a time.' $MaxParallel @{}
     Add-Metric 'cohesity_collector_last_run_timestamp_seconds' 'Unix time the collector last completed.' (Get-UnixNow) @{}
     Add-Metric 'cohesity_collector_run_duration_seconds' 'Wall-clock time of the whole collector run.' ((Get-UnixNow) - $started) @{}
     Add-Metric 'cohesity_collector_info' 'Installed Cohesity monitoring package version (value is always 1).' 1 ([ordered]@{ version = $script:PackageVersion })
@@ -1384,7 +970,7 @@ if ($MaxParallel -gt 1 -and $selectedServers.Count -gt 1 -and -not $isChild) {
     Get-ChildItem -LiteralPath $TextfileDirectory -Filter 'cohesity-*.prom' -File | Where-Object { $keep -notcontains $_.Name } | Remove-Item -Force -ErrorAction SilentlyContinue
     $count = Write-MetricsFile (Join-Path $TextfileDirectory $FileName)
     $failed = @($exitCodes.Values | Where-Object { $_ -ne 0 }).Count
-    Write-Host ("Ran {0} appliance collector(s), {1} at a time, in {2}s; {3} failed. Summary: {4}" -f $exitCodes.Count, $MaxParallel, ((Get-UnixNow) - $started), $failed, (Join-Path $TextfileDirectory $FileName))
+    Write-Host ("Ran {0} cluster collector(s), {1} at a time, in {2}s; {3} failed. Summary: {4}" -f $exitCodes.Count, $MaxParallel, ((Get-UnixNow) - $started), $failed, (Join-Path $TextfileDirectory $FileName))
     if ($failed -gt 0) { exit 2 }
     exit 0
 }
@@ -1394,15 +980,15 @@ if ($MaxParallel -gt 1 -and $selectedServers.Count -gt 1 -and -not $isChild) {
 # ---------------------------------------------------------------------------
 $anyFailure = $false
 foreach ($s in $selectedServers) {
-    $labels = [ordered]@{ server = $s.Name }
+    $labels = [ordered]@{ cluster = $s.Name }
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     $connection = $null
     try {
         $connection = Connect-Cohesity -ServerConfig $s -Credential $credentialByName[$s.Name]
-        Add-Metric 'cohesity_up' 'API login succeeded (1) or failed (0).' 1 $labels
+        Add-Metric 'cohesity_up' 'API login and a first authenticated call succeeded (1) or failed (0).' 1 $labels
     } catch {
         $anyFailure = $true
-        Add-Metric 'cohesity_up' 'API login succeeded (1) or failed (0).' 0 $labels
+        Add-Metric 'cohesity_up' 'API login and a first authenticated call succeeded (1) or failed (0).' 0 $labels
         Write-Warning "$($s.Name): $($_.Exception.Message)"
         continue
     }
@@ -1441,21 +1027,21 @@ foreach ($s in $selectedServers) {
                     $script:capture = $null
                 }
             }
-            Add-Metric 'cohesity_check_success' 'Collector check succeeded (1) or failed (0).' $ok ([ordered]@{ server = $s.Name; check = $name })
-            if ($ok -eq 1) { Add-Metric 'cohesity_check_last_success_timestamp_seconds' 'When the check last succeeded (older than now for cached checks).' $lastSuccess ([ordered]@{ server = $s.Name; check = $name }) }
+            Add-Metric 'cohesity_check_success' 'Collector check succeeded (1) or failed (0).' $ok ([ordered]@{ cluster = $s.Name; check = $name })
+            if ($ok -eq 1) { Add-Metric 'cohesity_check_last_success_timestamp_seconds' 'When the check last succeeded (older than now for cached checks).' $lastSuccess ([ordered]@{ cluster = $s.Name; check = $name }) }
         }
     } finally {
         Disconnect-Cohesity $connection
         try { Write-JsonState $cachePath $cache } catch { Write-Warning "$($s.Name): cannot save check cache: $($_.Exception.Message)" }
         $timer.Stop()
-        Add-Metric 'cohesity_collect_duration_seconds' 'Time spent collecting from the appliance.' $timer.Elapsed.TotalSeconds $labels
+        Add-Metric 'cohesity_collect_duration_seconds' 'Time spent collecting from the cluster.' $timer.Elapsed.TotalSeconds $labels
     }
 }
 # Unlabelled summary metrics belong to the top-level process only; in parallel mode the parent writes them.
 if (-not $isChild) {
     Add-Metric 'cohesity_collector_last_run_timestamp_seconds' 'Unix time the collector last completed.' (Get-UnixNow) @{}
     Add-Metric 'cohesity_collector_info' 'Installed Cohesity monitoring package version (value is always 1).' 1 ([ordered]@{ version = $script:PackageVersion })
-    # A per-server file from an earlier parallel run would duplicate this file's series, so drop it.
+    # A per-cluster file from an earlier parallel run would duplicate this file's series, so drop it.
     foreach ($s in $selectedServers) {
         $stale = Join-Path $TextfileDirectory (Get-ServerMetricsFileName $s.Name)
         if ($stale -ne (Join-Path $TextfileDirectory $FileName) -and (Test-Path -LiteralPath $stale)) { Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue }
@@ -1464,6 +1050,6 @@ if (-not $isChild) {
 
 $target = Join-Path $TextfileDirectory $FileName
 $count = Write-MetricsFile $target
-Write-Host ("Wrote {0} samples for {1} server(s) to {2}" -f $count, $selectedServers.Count, $target)
+Write-Host ("Wrote {0} samples for {1} cluster(s) to {2}" -f $count, $selectedServers.Count, $target)
 if ($anyFailure) { exit 2 }
 exit 0

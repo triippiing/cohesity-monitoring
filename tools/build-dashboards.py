@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates the Grafana dashboards in monitoring/dashboards/:
-Fleet, Activity, Instance, Patch management, Events, and in monitoring/dashboards-html/ the variants that use the
+Fleet, Activity, Instance, Patch management, Alerts, and in monitoring/dashboards-html/ the variants that use the
 Business Text panel plugin (Fleet's estate cards). Re-run after changing metrics or layout.
 Colours come from monitoring/theme.example.json. Native panels use Grafana's named colours (green, orange, red,
 blue) and the HTML uses the example theme's hex values; Publish-CohesityDashboards.ps1 swaps both for a site's
@@ -18,16 +18,16 @@ assert len({v.upper() for v in C.values()}) == len(C), "theme.example.json colou
 BT_PANEL = "marcusolsson-dynamictext-panel"
 DS = {"type": "prometheus", "uid": "${datasource}"}
 REFS = "ABCDEFGHIJKLMNOP"
-INSTANCE_URL = "/d/cohesity-instance/cohesity-instance?var-server=${__data.fields.server}"
+INSTANCE_URL = "/d/cohesity-instance/cohesity-instance?var-cluster=${__data.fields.cluster}"
 OKFAIL = [{"type": "value", "options": {"1": {"text": "OK", "color": "green"}, "0": {"text": "FAIL", "color": "red"}}}]
 YESNO = [{"type": "value", "options": {"1": {"text": "Yes", "color": "red"}, "0": {"text": "No", "color": "green"}}}]
 GREEN_RED = [{"color": "green", "value": None}, {"color": "red", "value": 1}]
 RED_GREEN = [{"color": "red", "value": None}, {"color": "green", "value": 1}]
 BLUE = [{"color": "blue", "value": None}]
 STATE_COLORS = [
-    {"type": "regex", "options": {"pattern": ".*(error|fail|stopped|suspended|offline|incomplete|cancel).*", "result": {"color": "red"}}},
-    {"type": "regex", "options": {"pattern": ".*(running|deduplicating|repli|preparing|queued|pending|waiting|scanning).*", "result": {"color": "orange"}}},
-    {"type": "regex", "options": {"pattern": "^(idle|completed|online|normal|notconfigured|empty|loaded|ready)$", "result": {"color": "green"}}},
+    {"type": "regex", "options": {"pattern": ".*(error|fail|stopped|missed|canceled|cancelled|unregister|infected|critical).*", "result": {"color": "red"}}},
+    {"type": "regex", "options": {"pattern": ".*(running|accepted|onhold|paused|finalizing|canceling|warning|pending|scheduled|refresh|quarantin).*", "result": {"color": "orange"}}},
+    {"type": "regex", "options": {"pattern": "^(succeeded|registered|finished|none|dontremove|ok|healthy)$", "result": {"color": "green"}}},
 ]
 
 
@@ -36,10 +36,10 @@ def esc(text):
 
 
 class Dashboard:
-    def __init__(self, title, uid, server_filter, server_var, time_from="now-24h", refresh="1m", description="", html=False):
+    def __init__(self, title, uid, cluster_filter, cluster_var, time_from="now-24h", refresh="1m", description="", html=False):
         """html: the Business Text variant, where a section whose stat panels follow its header is drawn as one panel
         (section(): header, navy ground, rounded tiles) instead of a header and a row of stat panels."""
-        self.title, self.uid, self.S, self.server_var = title, uid, server_filter, server_var
+        self.title, self.uid, self.S, self.cluster_var = title, uid, cluster_filter, cluster_var
         self.time_from, self.refresh, self.description, self.html = time_from, refresh, description, html
         self.panels, self._id, self._y, self._x, self._h = [], 0, 0, 0, 0
         self._section = None
@@ -236,11 +236,14 @@ class Dashboard:
             overrides.append({"matcher": {"id": "byName", "options": name}, "properties": [
                 {"id": "custom.cellOptions", "value": {"type": "color-text"}}, {"id": "mappings", "value": OKFAIL}]})
         for name, (lo, hi) in (bar_cols or {}).items():
+            # A progress bar is never a warning; a usage bar turns orange at 80 and red at 90.
+            steps = [{"color": "blue", "value": None}] if name.startswith("Progress") else \
+                [{"color": "green", "value": None}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}]
             overrides.append({"matcher": {"id": "byName", "options": name}, "properties": [
                 {"id": "custom.cellOptions", "value": {"type": "gauge", "mode": "basic"}}, {"id": "min", "value": lo}, {"id": "max", "value": hi},
-                {"id": "thresholds", "value": {"mode": "absolute", "steps": [{"color": "green", "value": None}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}]}}]})
+                {"id": "thresholds", "value": {"mode": "absolute", "steps": steps}}]})
         if links:
-            overrides.append({"matcher": {"id": "byName", "options": "server"}, "properties": [{"id": "links", "value": links}]})
+            overrides.append({"matcher": {"id": "byName", "options": "cluster"}, "properties": [{"id": "links", "value": links}]})
         tr = []
         if merge and len(exprs) > 1:
             # Merge joins rows only when every shared column matches. Raw series carry __name__ (which differs per
@@ -249,7 +252,9 @@ class Dashboard:
             tr.append({"id": "merge", "options": {}})
         org = {"excludeByName": exclude, "renameByName": ren}
         if order:
-            org["indexByName"] = {name: i for i, name in enumerate(order)}
+            # Organize positions fields by their names before the rename, so map renamed columns back.
+            original = {v: k for k, v in ren.items()}
+            org["indexByName"] = {original.get(name, name): i for i, name in enumerate(order)}
         tr.append({"id": "organize", "options": org})
         if sort:
             tr.append({"id": "sortBy", "options": {"sort": [{"field": sort[0], "desc": sort[1]}]}})
@@ -265,14 +270,14 @@ class Dashboard:
         self.flush()
         variables = [{"name": "datasource", "type": "datasource", "query": "prometheus", "label": "Data source",
                       "current": {"text": "Cohesity Prometheus", "value": "cohesity-prometheus"}}]
-        if self.server_var == "multi":
-            variables.append({"name": "server", "type": "query", "datasource": DS, "query": {"query": "label_values(cohesity_up, server)", "refId": "A"},
-                              "definition": "label_values(cohesity_up, server)", "includeAll": True, "multi": True, "sort": 1,
-                              "current": {"text": "All", "value": "$__all"}, "refresh": 2, "label": "Server"})
-        elif self.server_var == "single":
-            variables.append({"name": "server", "type": "query", "datasource": DS, "query": {"query": "label_values(cohesity_up, server)", "refId": "A"},
-                              "definition": "label_values(cohesity_up, server)", "includeAll": False, "multi": False, "sort": 1,
-                              "refresh": 2, "label": "Server"})
+        if self.cluster_var == "multi":
+            variables.append({"name": "cluster", "type": "query", "datasource": DS, "query": {"query": "label_values(cohesity_up, cluster)", "refId": "A"},
+                              "definition": "label_values(cohesity_up, cluster)", "includeAll": True, "multi": True, "sort": 1,
+                              "current": {"text": "All", "value": "$__all"}, "refresh": 2, "label": "Cluster"})
+        elif self.cluster_var == "single":
+            variables.append({"name": "cluster", "type": "query", "datasource": DS, "query": {"query": "label_values(cohesity_up, cluster)", "refId": "A"},
+                              "definition": "label_values(cohesity_up, cluster)", "includeAll": False, "multi": False, "sort": 1,
+                              "refresh": 2, "label": "Cluster"})
         return {
             "title": self.title, "uid": self.uid, "schemaVersion": 39, "version": 1, "editable": True, "graphTooltip": 1,
             "refresh": self.refresh, "time": {"from": self.time_from, "to": "now"}, "tags": ["cohesity"], "description": self.description,
@@ -321,10 +326,10 @@ context.handlebars.registerHelper('cohesityCards', (rows) => {
     return '<div class="ss-card ' + lv + '"><div class="ss-label" title="' + esc(c.label) + '">' + esc(c.label) + '</div>' +
       '<div class="ss-value">' + esc(fmt(v, c.unit)) + '</div><div class="ss-pill">' + WORD[lv] + '</div></div>';
   }).join('');
-  const total = values.appliances;
+  const total = values.clusters;
   const down = values.api_down;
-  const reach = isFinite(total) && isFinite(down) ? (total - down) + ' of ' + total + ' appliances reachable' : 'Appliance count not available';
-  const title = attention === 0 ? 'All appliances healthy' : attention + (attention === 1 ? ' indicator needs' : ' indicators need') + ' attention';
+  const reach = isFinite(total) && isFinite(down) ? (total - down) + ' of ' + total + ' clusters reachable' : 'Cluster count not available';
+  const title = attention === 0 ? 'All clusters healthy' : attention + (attention === 1 ? ' indicator needs' : ' indicators need') + ' attention';
   const mark = attention === 0 ? '&#10003;' : '!';
   const hero = '<div class="ss-hero ' + (attention === 0 ? 'ok' : worst) + '"><div class="ss-mark">' + mark + '</div>' +
     '<div class="ss-hero-title">' + esc(title) + '</div><div class="ss-hero-sub">' + esc(reach) + '</div></div>';
@@ -450,22 +455,22 @@ def write(d, out_dir=OUT_DIR):
 
 # ============================================================================ Fleet
 def fleet(html=False):
-    S = 'server=~"$server"'
-    d = Dashboard("Cohesity Fleet", "cohesity-fleet", S, "multi", description="One row per appliance; red rows need attention. Click a server name to open its Instance page.", html=html)
+    S = 'cluster=~"$cluster"'
+    d = Dashboard("Cohesity Fleet", "cohesity-fleet", S, "multi", description="One row per cluster; red rows need attention. Click a cluster name to open its Instance page.", html=html)
     # (key, title, expr, unit, warn from, crit from): the stat row, or with html the Business Text section.
     estate = [
-        ("appliances", "Appliances", f'count(cohesity_up{{{S}}})', None, None, None),
+        ("clusters", "Clusters", f'count(cohesity_up{{{S}}})', None, None, None),
         ("api_down", "API down", f'count(cohesity_up{{{S}}} == 0) or vector(0)', None, None, 1),
         ("checks", "Failed checks", f'count(cohesity_check_success{{{S}}} == 0) or vector(0)', None, None, 1),
-        ("failover", "Failover not normal", f'count(cohesity_failover_healthy{{{S}}} == 0) or vector(0)', None, None, 1),
-        ("devices", "LUNs / repo devices offline", f'(count(cohesity_physicaldevice_online{{{S}}} == 0) or vector(0)) + (count(cohesity_dedupe_repository_disk_online{{{S}}} == 0) or vector(0))', None, None, 1),
-        ("errors", "Errors + criticals, 24h", f'sum(increase(cohesity_events_total{{{S},severity=~"error|critical"}}[24h])) or vector(0)', None, None, 1),
-        ("warnings", "Warnings, 24h", f'sum(increase(cohesity_events_total{{{S},severity="warning"}}[24h])) or vector(0)', None, 1, None),
+        ("groups", "Groups failing", f'count(cohesity_group_last_run_ok{{{S}}} == 0) or vector(0)', None, None, 1),
+        ("sla", "SLA violations", f'sum(cohesity_group_last_run_sla_violated{{{S}}}) or vector(0)', None, 1, None),
+        ("critical", "Critical alerts open", f'sum(cohesity_alerts_open{{{S},severity="critical"}}) or vector(0)', None, None, 1),
+        ("hardware", "Nodes out / disks offline", f'(count(cohesity_node_in_cluster{{{S}}} == 0) or vector(0)) + (sum(cohesity_node_offline_disks{{{S}}}) or vector(0))', None, 1, None),
         ("lastrun", "Collector last run", 'time() - cohesity_collector_last_run_timestamp_seconds', "s", 600, 900),
     ]
     if html:
         d.cards(estate, "Estate", desc="Estate health at a glance. A tile turns orange or red at the same thresholds as the stat row of the plain Fleet dashboard; "
-                             "'Collector last run' is the time since the collector last completed a full run.")
+                             "'Groups failing' counts protection groups whose last backup run failed; 'Collector last run' is the time since the collector last completed a full run.")
     else:
         d.row("Estate")
         for key, title, expr, unit, warn, crit in estate:
@@ -474,227 +479,224 @@ def fleet(html=False):
                 steps = steps + [{"color": "orange", "value": warn}]
             if crit is not None:
                 steps = steps + [{"color": "red", "value": crit}]
-            d.stat(title, [(expr, None)], unit, w=3, thresholds=steps, decimals=0 if key in ("errors", "warnings") else None,
+            d.stat(title, [(expr, None)], unit, w=3, thresholds=steps, decimals=0 if unit is None else None,
                    desc="Time since the collector last completed a full run." if key == "lastrun" else None)
 
-    d.row("Appliances")
+    zero = f'0 * max by (cluster) (cohesity_up{{{S}}})'
+    d.row("Clusters")
     d.table("Fleet status", [
-        f'max by (server) (cohesity_up{{{S}}})',
-        f'sum by (server) (1 - cohesity_check_success{{{S}}})',
-        f'max by (server) (cohesity_failover_healthy{{{S}}})',
-        f'100 * sum by (server) (cohesity_storagepool_used_bytes{{{S}}}) / sum by (server) (cohesity_storagepool_size_bytes{{{S}}})',
-        f'sum by (server) (1 - cohesity_physicaldevice_online{{{S}}}) + (sum by (server) (1 - cohesity_dedupe_repository_disk_online{{{S}}}) or 0 * max by (server) (cohesity_up{{{S}}}))',
-        f'sum by (server) (cohesity_dedupe_24h_scanned_bytes{{{S}}}) / sum by (server) (cohesity_dedupe_24h_unique_bytes{{{S}}} > 0)',
-        f'max by (server) (cohesity_dedupe_queue_jobs_total{{{S}}})',
-        f'sum by (server) (cohesity_replication_queue_jobs_total{{{S}}})',
-        f'sum by (server) (increase(cohesity_events_total{{{S},severity=~"error|critical"}}[24h]))',
-        f'sum by (server) (increase(cohesity_events_total{{{S},severity="warning"}}[24h]))',
-        f'min by (server) (time() - cohesity_replica_newest_replicated_timestamp_seconds{{{S}}})',
-        f'max by (server) (abs(cohesity_time_offset_seconds{{{S}}}))',
-        f'max by (server, version, build) (cohesity_info{{{S}}})',
-    ], rename={"A": "API", "B": "Failed checks", "C": "Failover OK", "D": "Pool used %", "E": "Devices offline", "F": "Dedupe ratio 24h", "G": "Dedupe queue",
-               "H": "Repl queue", "I": "Err+crit 24h", "J": "Warn 24h", "K": "Newest replica age", "L": "Clock offset", "M": None},
-        units={"Newest replica age": "s", "Clock offset": "s", "Dedupe ratio 24h": "none"}, bool_cols=["API", "Failover OK"], bar_cols={"Pool used %": (0, 100)},
-        order=["server", "API", "Failed checks", "Failover OK", "Devices offline", "Pool used %", "Dedupe ratio 24h", "Dedupe queue", "Repl queue", "Err+crit 24h", "Warn 24h", "Newest replica age", "Clock offset", "version", "build"],
-        sort=("Failed checks", True), h=16, links=[{"title": "Open instance", "url": INSTANCE_URL}], filterable=True,
-        desc="Dedupe ratio = scanned / unique over completed runs in the last 24 h. Devices offline counts LUNs and repository devices. Newest replica age is the time since the most recently updated replica tape on that appliance.")
+        f'max by (cluster) (cohesity_up{{{S}}})',
+        f'sum by (cluster) (1 - cohesity_check_success{{{S}}})',
+        f'100 * max by (cluster) (cohesity_storage_used_bytes{{{S}}}) / max by (cluster) (cohesity_storage_capacity_bytes{{{S}}})',
+        f'max by (cluster) (cohesity_cluster_data_reduction_ratio{{{S}}})',
+        f'sum by (cluster) (1 - cohesity_group_last_run_ok{{{S}}}) or {zero}',
+        f'sum by (cluster) (cohesity_group_last_run_sla_violated{{{S}}}) or {zero}',
+        f'sum by (cluster) (cohesity_group_runs_24h{{{S},status="failed"}}) or {zero}',
+        f'max by (cluster) (cohesity_runs_active{{{S}}})',
+        f'sum by (cluster) (cohesity_alerts_open{{{S},severity="critical"}})',
+        f'sum by (cluster) (cohesity_alerts_open{{{S},severity="warning"}})',
+        f'(count by (cluster) (cohesity_node_in_cluster{{{S}}} == 0) or {zero}) + (sum by (cluster) (cohesity_node_offline_disks{{{S}}}) or {zero})',
+        f'max by (cluster) (cohesity_cluster_stopped_services{{{S}}})',
+        f'max by (cluster) (abs(cohesity_time_offset_seconds{{{S}}}))',
+        f'max by (cluster, version) (cohesity_info{{{S}}})',
+    ], rename={"A": "API", "B": "Failed checks", "C": "Used %", "D": "Reduction", "E": "Groups failing", "F": "SLA missed", "G": "Failed runs 24h",
+               "H": "Running", "I": "Critical alerts", "J": "Warning alerts", "K": "Nodes/disks out", "L": "Stopped services", "M": "Clock offset", "N": None},
+        units={"Clock offset": "s", "Reduction": "none"}, bool_cols=["API"], bar_cols={"Used %": (0, 100)},
+        order=["cluster", "API", "Failed checks", "Used %", "Reduction", "Groups failing", "SLA missed", "Failed runs 24h", "Running", "Critical alerts", "Warning alerts",
+               "Nodes/disks out", "Stopped services", "Clock offset", "version"],
+        sort=("Failed checks", True), h=10, links=[{"title": "Open instance", "url": INSTANCE_URL}], filterable=True,
+        desc="Used % is local storage used / total capacity (v2 cluster-storage). Reduction is the cluster data reduction ratio (N:1). Groups failing counts groups whose last backup run failed; "
+             "SLA missed counts groups whose last run missed its SLA. Nodes/disks out adds nodes not in the cluster and offline disks.")
 
     d.row("Trends")
-    d.ts("Pool used %", [(f'100 * sum by (server) (cohesity_storagepool_used_bytes{{{S}}}) / sum by (server) (cohesity_storagepool_size_bytes{{{S}}})', "{{server}}")], "percent", w=12)
-    d.ts("Errors and criticals per hour", [(f'sum by (server) (increase(cohesity_events_total{{{S},severity=~"error|critical"}}[1h]))', "{{server}}")], "none", w=12, bars=True, stack=True)
-    d.ts("Dedupe queue depth", [(f'cohesity_dedupe_queue_jobs_total{{{S}}}', "{{server}}")], "none", w=12)
-    d.ts("Replication queue depth", [(f'sum by (server) (cohesity_replication_queue_jobs_total{{{S}}})', "{{server}}")], "none", w=12)
+    d.ts("Storage used %", [(f'100 * cohesity_storage_used_bytes{{{S}}} / cohesity_storage_capacity_bytes{{{S}}}', "{{cluster}}")], "percent", w=12)
+    d.ts("Cluster throughput (read + write)", [(f'sum by (cluster) (cohesity_cluster_throughput_bytes_per_second{{{S}}})', "{{cluster}}")], "Bps", w=12)
+    d.ts("Backup runs in progress", [(f'cohesity_runs_active{{{S}}}', "{{cluster}}")], "none", w=12)
+    d.ts("Open critical and warning alerts", [(f'sum by (cluster) (cohesity_alerts_open{{{S},severity=~"critical|warning"}})', "{{cluster}}")], "none", w=12)
     write(d, HTML_DIR if html else OUT_DIR)
 
 
 # ============================================================================ Activity
 def activity(html=False):
-    S = 'server=~"$server"'
-    d = Dashboard("Cohesity Activity", "cohesity-activity", S, "multi", refresh="30s", description="Live jobs across the estate: deduplication, replication and repository maintenance.", html=html)
+    S = 'cluster=~"$cluster"'
+    d = Dashboard("Cohesity Activity", "cohesity-activity", S, "multi", refresh="30s", description="Live work across the estate: backup runs, replication, archives and recoveries.", html=html)
     d.row("Now")
-    d.stat("Dedupe jobs active", [(f'count(cohesity_dedupe_job_info{{{S},state=~"deduplicating|indexrepli|uniquereplicating|preparing.*|pending"}}) or vector(0)', None)], w=4)
-    d.stat("Dedupe jobs queued", [(f'count(cohesity_dedupe_job_info{{{S},state=~"queued|tapeindrive|uniquerepliqueued"}}) or vector(0)', None)], w=4)
-    d.stat("Dedupe jobs paused / suspended", [(f'count(cohesity_dedupe_job_info{{{S},state=~"paused|suspended|stopping"}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
-    d.stat("Replication jobs running", [(f'count(cohesity_replication_job_info{{{S},state="running"}}) or vector(0)', None)], w=4)
-    d.stat("Replication jobs waiting", [(f'count(cohesity_replication_job_info{{{S},state=~"waiting.*"}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
-    d.stat("Reclamation / prune running", [(f'count(cohesity_dedupe_maintenance_status{{{S},status="running"}}) or vector(0)', None)], w=4)
+    d.stat("Backup runs in progress", [(f'sum(cohesity_runs_active{{{S}}}) or vector(0)', None)], w=4)
+    d.stat("Recoveries in progress", [(f'sum(cohesity_recoveries_active{{{S}}}) or vector(0)', None)], w=4)
+    d.stat("Runs succeeded, 24h", [(f'sum(cohesity_runs_24h{{{S},status=~"succeeded|succeededwithwarning"}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}])
+    d.stat("Runs failed, 24h", [(f'sum(cohesity_runs_24h{{{S},status=~"failed|missed|canceled"}}) or vector(0)', None)], w=4, thresholds=GREEN_RED)
+    d.stat("SLA violations, 24h", [(f'sum(cohesity_group_24h_sla_violations{{{S}}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
+    d.stat("Replication / archive failures", [(f'(count(cohesity_replication_last_status{{{S},status=~"failed|canceled"}}) or vector(0)) + (count(cohesity_archive_last_status{{{S},status=~"failed|canceled"}}) or vector(0))', None)],
+           w=4, thresholds=GREEN_RED, desc="Groups whose last replication or archive to a target failed.")
 
-    d.row("Deduplication jobs")
-    d.table("Dedupe jobs", [
-        f'cohesity_dedupe_job_info{{{S}}}',
-        f'cohesity_dedupe_job_progress_percent{{{S}}}',
-        f'cohesity_dedupe_job_throughput_bytes_per_second{{{S}}}',
-        f'cohesity_dedupe_job_scanned_bytes{{{S}}}',
-        f'cohesity_dedupe_job_data_bytes{{{S}}}',
-        f'cohesity_dedupe_job_undeduped_bytes{{{S}}}',
-        f'cohesity_dedupe_job_first_seen_timestamp_seconds{{{S}}} * 1000',
-    ], rename={"A": None, "B": "Progress %", "C": "Throughput", "D": "Scanned", "E": "Tape data", "F": "Un-deduped", "G": "First seen"},
-        units={"Throughput": "Bps", "Scanned": "bytes", "Tape data": "bytes", "Un-deduped": "bytes", "First seen": "dateTimeAsIso"},
-        bar_cols={"Progress %": (0, 100)}, color_cols=["state"], hide=["destination_drive"],
-        order=["server", "policy", "barcode", "tape", "state", "drive", "Progress %", "Throughput", "Scanned", "Tape data", "Un-deduped", "First seen", "trigger", "replicationmode", "parser"],
-        sort=("First seen", False), h=12, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
-        desc="One row per tape in a deduplication queue. 'First seen' is when the collector first saw the job (the API has no start time; accurate to one collector interval). 'drive' is the drive the tape is being read from.")
-    d.ts("Dedupe throughput by appliance", [(f'sum by (server) (cohesity_dedupe_job_throughput_bytes_per_second{{{S}}})', "{{server}}")], "Bps", w=12, h=7)
-    d.ts("Dedupe jobs by state", [(f'count by (state) (cohesity_dedupe_job_info{{{S}}})', "{{state}}")], "none", w=12, h=7, stack=True)
+    d.row("Backup runs in progress")
+    d.table("Running backup runs", [
+        f'cohesity_run_info{{{S}}}',
+        f'max by (cluster, group, run_id) (cohesity_run_progress_percent{{{S},task="backup"}})',
+        f'cohesity_run_objects_done{{{S}}}',
+        f'cohesity_run_objects{{{S}}}',
+        f'cohesity_run_written_bytes{{{S}}}',
+        f'cohesity_run_logical_bytes{{{S}}}',
+        f'max by (cluster, group, run_id) (cohesity_run_remaining_seconds{{{S},task="backup"}})',
+        f'cohesity_run_start_timestamp_seconds{{{S}}} * 1000',
+        f'cohesity_run_first_seen_timestamp_seconds{{{S}}} * 1000',
+    ], rename={"A": None, "B": "Progress %", "C": "Objects done", "D": "Objects", "E": "Written", "F": "Logical", "G": "Remaining", "H": "Started", "I": "First seen"},
+        units={"Written": "bytes", "Logical": "bytes", "Remaining": "s", "Started": "dateTimeAsIso", "First seen": "dateTimeAsIso"},
+        bar_cols={"Progress %": (0, 100)}, color_cols=["status"],
+        order=["cluster", "group", "env", "status", "full", "Progress %", "Objects done", "Objects", "Written", "Logical", "Remaining", "Started", "First seen", "run_id"],
+        sort=("Started", False), h=10, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
+        desc="One row per backup run in progress (status accepted, running, on hold, finalizing, paused or canceling). Progress and remaining time come from the run's progress call, "
+             "which the collector makes for up to 50 running runs per cluster. 'First seen' is when the collector first saw the run in progress.")
+    d.ts("Backup runs in progress by cluster", [(f'cohesity_runs_active{{{S}}}', "{{cluster}}")], "none", w=12, h=7, stack=True)
+    d.ts("Cluster write throughput", [(f'cohesity_cluster_throughput_bytes_per_second{{{S},op="write"}}', "{{cluster}}")], "Bps", w=12, h=7)
 
-    d.row("Replication jobs")
-    d.table("Replication jobs", [
-        f'cohesity_replication_job_info{{{S}}}',
-        f'cohesity_replication_job_progress_percent{{{S}}}',
-        f'cohesity_replication_job_throughput_bytes_per_second{{{S}}}',
-        f'cohesity_replication_job_transmitted_bytes{{{S}}}',
-        f'cohesity_replication_job_total_bytes{{{S}}}',
-        f'cohesity_replication_job_remaining_seconds{{{S}}}',
-        f'cohesity_replication_job_start_timestamp_seconds{{{S}}} * 1000',
-        f'cohesity_replication_job_first_seen_timestamp_seconds{{{S}}} * 1000',
-        f'cohesity_replication_job_next_retry_timestamp_seconds{{{S}}} * 1000 > 0',
-        f'cohesity_replication_job_retries_left{{{S}}}',
-    ], rename={"A": None, "B": "Progress %", "C": "Throughput", "D": "Transmitted", "E": "To replicate", "F": "Remaining", "G": "Started", "H": "First seen", "I": "Next retry", "J": "Retries left"},
-        units={"Throughput": "Bps", "Transmitted": "bytes", "To replicate": "bytes", "Remaining": "s", "Started": "dateTimeAsIso", "First seen": "dateTimeAsIso", "Next retry": "dateTimeAsIso"},
-        bar_cols={"Progress %": (0, 100)}, color_cols=["state"], hide=["targetip"],
-        order=["server", "direction", "queue", "policy", "barcode", "tape", "source", "target", "state", "phase", "Progress %", "Throughput", "Transmitted", "To replicate", "Remaining", "Started", "First seen", "Next retry", "Retries left", "mode"],
-        sort=("First seen", False), h=12, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
-        desc="queue=dedupe: the replication leg of a deduplication job (outgoing, from the source). classic: a non-deduplicated tape (outgoing). unique: the unique-data phase as seen on the target (incoming, with the appliance's own start time). Replication uses no tape drive.")
-    d.ts("Replication throughput by appliance", [(f'sum by (server) (cohesity_replication_job_throughput_bytes_per_second{{{S}}})', "{{server}}")], "Bps", w=12, h=7)
-    d.ts("Replication jobs by state", [(f'count by (state) (cohesity_replication_job_info{{{S}}})', "{{state}}")], "none", w=12, h=7, stack=True)
+    d.row("Last 24 hours by protection group")
+    d.table("Runs per group, last 24 hours", [
+        f'sum by (cluster, group) (cohesity_group_runs_24h{{{S},status=~"succeeded|succeededwithwarning"}})',
+        f'sum by (cluster, group) (cohesity_group_runs_24h{{{S},status=~"failed|missed|canceled"}})',
+        f'cohesity_group_24h_sla_violations{{{S}}}',
+        f'cohesity_group_24h_written_bytes{{{S}}}',
+        f'cohesity_group_24h_logical_bytes{{{S}}}',
+        f'max by (cluster, group) (cohesity_group_last_run_status{{{S}}} == 1)',
+    ], rename={"A": "Succeeded", "B": "Failed", "C": "SLA missed", "D": "Written", "E": "Logical", "F": None},
+        units={"Written": "bytes", "Logical": "bytes"}, order=["cluster", "group", "Succeeded", "Failed", "SLA missed", "Written", "Logical"],
+        sort=("Failed", True), w=14, h=12, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
+        desc="Runs started in the last 24 hours (v2 runs summary). Written is the data written after reduction; Logical is the logical size protected.")
+    d.ts("Runs started in the last 24 hours, by status", [(f'sum by (status) (cohesity_runs_24h{{{S}}})', "{{status}}")], "none", w=10, h=12, stack=True)
 
-    d.row("Repository maintenance (space reclamation and index pruning)")
-    d.table("Reclamation and pruning running now", [
-        f'cohesity_dedupe_maintenance_status{{{S},status="running"}} == 1',
-        f'cohesity_dedupe_maintenance_running_since_timestamp_seconds{{{S}}} * 1000 > 0',
-    ], rename={"A": None, "B": "Running since"}, units={"Running since": "dateTimeAsIso"},
-        color_cols=["status"], order=["server", "process", "status", "Running since"],
-        sort=("Running since", False), w=12, h=8, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
-        desc="Only jobs with status 'running' are listed; the table is empty when no reclamation or prune is in progress. 'Running since' is when the collector first saw the run (the API gives only idle/running/failed, no start time or space figures).")
-    d.table("Reclamation policy", [f'cohesity_reclamation_schedule_info{{{S}}}', f'max by (server) (cohesity_reclamation_policy_enabled{{{S},trigger="usage"}})',
-                                   f'max by (server) (cohesity_reclamation_policy_enabled{{{S},trigger="schedule"}})', f'cohesity_reclamation_usage_check_interval_seconds{{{S}}}'],
-            rename={"A": None, "B": "Usage trigger", "C": "Scheduled", "D": "Usage check every"}, units={"Usage check every": "s"}, hide=["trigger"],
-            order=["server", "Usage trigger", "Usage check every", "Scheduled", "weekdays", "starttime"], w=12, h=8, bool_cols=["Usage trigger", "Scheduled"])
-    d.ts("Reclamation / prune running (history)", [(f'count by (server, process) (cohesity_dedupe_maintenance_status{{{S},status="running"}})', "{{server}} {{process}}")], "none", w=24, h=7, bars=True)
+    d.row("Replication and archive (each group's last run)")
+    d.table("Replication", [
+        f'cohesity_replication_last_status{{{S}}}',
+        f'cohesity_replication_last_percent{{{S}}}',
+        f'cohesity_replication_last_logical_bytes{{{S}}}',
+        f'cohesity_replication_last_physical_bytes{{{S}}}',
+        f'cohesity_replication_last_end_timestamp_seconds{{{S}}} * 1000',
+        f'cohesity_replication_last_sla_violated{{{S}}}',
+    ], rename={"A": None, "B": "Progress %", "C": "Logical", "D": "Sent", "E": "Ended", "F": "SLA missed"},
+        units={"Logical": "bytes", "Sent": "bytes", "Ended": "dateTimeAsIso"}, bar_cols={"Progress %": (0, 100)}, color_cols=["status"],
+        order=["cluster", "group", "target", "status", "Progress %", "Logical", "Sent", "Ended", "SLA missed"], sort=("Ended", True), w=12, h=10, filterable=True)
+    d.table("Archive", [
+        f'cohesity_archive_last_status{{{S}}}',
+        f'cohesity_archive_last_logical_bytes{{{S}}}',
+        f'cohesity_archive_last_transfer_rate_bytes_per_second{{{S}}}',
+        f'cohesity_archive_last_end_timestamp_seconds{{{S}}} * 1000',
+        f'cohesity_archive_last_sla_violated{{{S}}}',
+    ], rename={"A": None, "B": "Logical", "C": "Rate", "D": "Ended", "E": "SLA missed"},
+        units={"Logical": "bytes", "Rate": "Bps", "Ended": "dateTimeAsIso"}, color_cols=["status"],
+        order=["cluster", "group", "target", "target_type", "status", "Logical", "Rate", "Ended", "SLA missed"], sort=("Ended", True), w=12, h=10, filterable=True)
 
-    d.row("Policy runs and import/export")
-    d.table("Latest policy run per appliance", [
-        f'cohesity_dedupe_run_last_status{{{S}}} == 1',
-        f'cohesity_dedupe_run_last_timestamp_seconds{{{S}}} * 1000',
-        f'cohesity_dedupe_completed_run_ratio{{{S}}}',
-        f'cohesity_dedupe_completed_run_scanned_bytes{{{S}}}',
-        f'cohesity_dedupe_completed_run_unique_bytes{{{S}}}',
-        f'cohesity_dedupe_completed_run_duration_seconds{{{S}}}',
-        f'max by (server, policy) (cohesity_dedupe_runs_24h{{{S},status="failed"}})',
-    ], rename={"A": None, "B": "Last run", "C": "Ratio (completed)", "D": "Scanned", "E": "Unique", "F": "Duration", "G": "Failed runs 24h"},
-        units={"Last run": "dateTimeAsIso", "Scanned": "bytes", "Unique": "bytes", "Duration": "s"}, color_cols=["status"],
-        order=["server", "policy", "status", "trigger", "Last run", "Ratio (completed)", "Scanned", "Unique", "Duration", "Failed runs 24h"],
-        sort=("Last run", True), w=14, h=10, filterable=True, desc="Ratio, scanned, unique and duration are from the most recent completed run; status and trigger are from the most recent run of any status.")
-    d.table("Import/export jobs", [f'cohesity_iejob_jobs_by_type{{{S}}} > 0'], rename={"A": "Jobs"}, color_cols=["status"], w=10, h=10, sort=("Jobs", True))
+    d.row("Recoveries")
+    d.table("Recoveries in progress", [f'cohesity_recovery_info{{{S}}} * 1000'], rename={"A": "Started"}, units={"Started": "dateTimeAsIso"}, color_cols=["status"],
+            order=["cluster", "name", "action", "env", "status", "user", "Started"], sort=("Started", False), w=14, h=8, filterable=True,
+            desc="Recoveries started in the last 24 hours that are still running.")
+    d.table("Recoveries, last 24 hours", [f'cohesity_recoveries_24h{{{S}}}'], rename={"A": "Recoveries"}, color_cols=["status"],
+            order=["cluster", "action", "status", "Recoveries"], sort=("cluster", False), w=10, h=8)
     write(d, HTML_DIR if html else OUT_DIR)
 
 
 # ============================================================================ Instance
 def instance(html=False):
-    S = 'server="$server"'
-    d = Dashboard("Cohesity Instance", "cohesity-instance", S, "single", description="Everything about one appliance. Pick the server at the top.", html=html)
+    S = 'cluster="$cluster"'
+    d = Dashboard("Cohesity Instance", "cohesity-instance", S, "single", description="Everything about one cluster. Pick the cluster at the top.", html=html)
     d.row("Health")
     d.stat("API", [(f'cohesity_up{{{S}}}', None)], w=3, mappings=OKFAIL, thresholds=RED_GREEN)
-    d.stat("Failover", [(f'cohesity_failover_status{{{S}}} == 1', "{{status}}")], w=3, thresholds=BLUE)
     d.stat("Failed checks", [(f'count(cohesity_check_success{{{S}}} == 0) or vector(0)', None)], w=3, thresholds=GREEN_RED)
-    d.stat("LUNs offline", [(f'count(cohesity_physicaldevice_online{{{S}}} == 0) or vector(0)', None)], w=3, thresholds=GREEN_RED)
-    d.stat("Repo devices offline", [(f'count(cohesity_dedupe_repository_disk_online{{{S}}} == 0) or vector(0)', None)], w=3, thresholds=GREEN_RED)
-    d.stat("Errors + criticals, 24h", [(f'sum(increase(cohesity_events_total{{{S},severity=~"error|critical"}}[24h])) or vector(0)', None)], w=3, thresholds=GREEN_RED, decimals=0)
+    d.stat("Nodes", [(f'cohesity_cluster_nodes{{{S}}}', None)], w=3)
+    d.stat("Nodes out / disks offline", [(f'(count(cohesity_node_in_cluster{{{S}}} == 0) or vector(0)) + (sum(cohesity_node_offline_disks{{{S}}}) or vector(0))', None)], w=3,
+           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
+    d.stat("Stopped services", [(f'cohesity_cluster_stopped_services{{{S}}}', None)], w=3, thresholds=GREEN_RED)
+    d.stat("Critical alerts open", [(f'sum(cohesity_alerts_open{{{S},severity="critical"}}) or vector(0)', None)], w=3, thresholds=GREEN_RED, decimals=0)
     d.stat("Clock offset", [(f'cohesity_time_offset_seconds{{{S}}}', None)], "s", w=3, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 60}])
-    d.stat("Collected", [(f'time() - cohesity_check_last_success_timestamp_seconds{{{S},check="version"}}', None)], "s", w=3,
-           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 600}, {"color": "red", "value": 900}], desc="Time since this appliance was last collected.")
-    d.table("Appliance", [f'cohesity_info{{{S}}}', f'cohesity_server_info{{{S}}}', f'cohesity_server_memory_bytes{{{S}}}', f'cohesity_server_cpus{{{S}}}'],
-            rename={"A": None, "B": None, "C": "Memory", "D": "CPUs"}, units={"Memory": "bytes"}, hide=["description", "cloud", "virtual", "kernel"], h=4,
-            order=["server", "hostname", "product", "version", "build", "role", "make", "model", "osversion", "Memory", "CPUs", "location"])
+    d.stat("Collected", [(f'time() - cohesity_check_last_success_timestamp_seconds{{{S},check="cluster"}}', None)], "s", w=3,
+           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 600}, {"color": "red", "value": 900}], desc="Time since this cluster was last collected.")
+    d.table("Cluster", [f'cohesity_info{{{S}}}', f'cohesity_cluster_encryption_enabled{{{S}}}', f'cohesity_cluster_services_synced{{{S}}}', f'cohesity_cluster_operation{{{S}}}'],
+            rename={"A": None, "B": "Encryption", "C": "Services synced", "D": None}, bool_cols=["Encryption", "Services synced"], h=4,
+            order=["cluster", "name", "id", "version", "patch", "type", "deployment", "operation", "Encryption", "Services synced"])
 
     d.row("Capacity")
-    d.stat("Pool used", [(f'100 * sum(cohesity_storagepool_used_bytes{{{S}}}) / sum(cohesity_storagepool_size_bytes{{{S}}})', None)], "percent", w=4, decimals=1,
+    d.stat("Used", [(f'100 * cohesity_storage_used_bytes{{{S}}} / cohesity_storage_capacity_bytes{{{S}}}', None)], "percent", w=4, decimals=1,
            thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}])
-    d.stat("Pool free", [(f'sum(cohesity_storagepool_size_bytes{{{S}}}) - sum(cohesity_storagepool_used_bytes{{{S}}})', None)], "bytes", w=4)
-    d.stat("Days until full (30d trend)", [(f'(sum(cohesity_storagepool_size_bytes{{{S}}}) - sum(cohesity_storagepool_used_bytes{{{S}}})) / clamp_min(deriv(sum(cohesity_storagepool_used_bytes{{{S}}})[30d:1h]), 1) / 86400', None)], "d", w=4, decimals=0,
-           thresholds=[{"color": "red", "value": None}, {"color": "orange", "value": 30}, {"color": "green", "value": 90}], desc="Free space divided by the 30-day growth rate. Shows a very large number while usage is flat or falling; needs several days of data to settle.")
-    d.stat("Alert threshold", [(f'cohesity_storage_threshold_percent{{{S}}}', None)], "percent", w=4)
-    d.stat("Virtualized disk used", [(f'100 * cohesity_virtualized_disk_used_bytes{{{S}}} / cohesity_virtualized_disk_size_bytes{{{S}}}', None)], "percent", w=4, decimals=1,
-           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 80}, {"color": "red", "value": 90}])
-    d.stat("Repository", [(f'cohesity_dedupe_repository_info{{{S}}}', "{{type}} {{mode}} {{nodetype}}")], w=4, thresholds=BLUE)
-    d.ts("Storage pool used", [(f'cohesity_storagepool_used_bytes{{{S}}}', "{{pool}} used"), (f'cohesity_storagepool_size_bytes{{{S}}}', "{{pool}} size")], "bytes", w=12)
-    d.ts("Virtualized disk", [(f'cohesity_virtualized_disk_used_bytes{{{S}}}', "used"), (f'cohesity_virtualized_disk_size_bytes{{{S}}}', "size")], "bytes", w=12)
-    d.table("LUNs", [f'cohesity_physicaldevice_online{{{S}}}', f'cohesity_physicaldevice_size_bytes{{{S}}}', f'cohesity_physicaldevice_used_bytes{{{S}}}'],
-            rename={"A": "Online", "B": "Size", "C": "Used"}, units={"Size": "bytes", "Used": "bytes"}, bool_cols=["Online"], sort=("Online", False), w=12, h=8)
-    d.table("Repository devices", [f'cohesity_dedupe_repository_disk_online{{{S}}}', f'cohesity_dedupe_repository_disk_size_bytes{{{S}}}'],
-            rename={"A": "Online", "B": "Size"}, units={"Size": "bytes"}, bool_cols=["Online"], sort=("Online", False), w=12, h=8)
+    d.stat("Available", [(f'cohesity_storage_available_bytes{{{S}}}', None)], "bytes", w=4)
+    d.stat("Days until full (30d trend)", [(f'cohesity_storage_available_bytes{{{S}}} / clamp_min(deriv(cohesity_storage_used_bytes{{{S}}}[30d:1h]), 1) / 86400', None)], "d", w=4, decimals=0,
+           thresholds=[{"color": "red", "value": None}, {"color": "orange", "value": 30}, {"color": "green", "value": 90}], desc="Available space divided by the 30-day growth rate. Shows a very large number while usage is flat or falling; needs several days of data to settle.")
+    d.stat("Data reduction", [(f'cohesity_cluster_data_reduction_ratio{{{S}}}', None)], None, w=4, decimals=1, desc="Logical data in / physical data written (N:1).")
+    d.stat("Capacity", [(f'cohesity_storage_capacity_bytes{{{S}}}', None)], "bytes", w=4)
+    d.stat("Usable after resiliency", [(f'cohesity_cluster_usable_capacity_bytes{{{S}}}', None)], "bytes", w=4, desc="Minimum usable capacity after erasure coding or replication factor.")
+    d.ts("Storage used", [(f'cohesity_storage_used_bytes{{{S}}}', "used"), (f'cohesity_storage_capacity_bytes{{{S}}}', "capacity")], "bytes", w=12)
+    d.ts("Used by service", [(f'cohesity_storage_service_bytes{{{S},kind="physical"}}', "{{service}}")], "bytes", w=12, stack=True)
+    d.table("Storage domains", [
+        f'cohesity_storage_domain_info{{{S}}}',
+        f'max by (cluster, domain) (cohesity_storage_domain_bytes{{{S},kind="local_physical"}})',
+        f'max by (cluster, domain) (cohesity_storage_domain_bytes{{{S},kind="logical"}})',
+        f'max by (cluster, domain) (cohesity_storage_domain_bytes{{{S},kind="data_in"}}) / max by (cluster, domain) (cohesity_storage_domain_bytes{{{S},kind="data_written"}} > 0)',
+        f'cohesity_storage_domain_quota_bytes{{{S}}}',
+        f'cohesity_storage_domain_files{{{S}}}',
+    ], rename={"A": None, "B": "Physical used", "C": "Logical", "D": "Reduction", "E": "Quota", "F": "Files"}, units={"Physical used": "bytes", "Logical": "bytes", "Quota": "bytes", "Reduction": "none"},
+        hide=["cluster", "domain_id"], order=["domain", "Physical used", "Logical", "Reduction", "Quota", "Files", "partition", "encryption", "node_failures_tolerated", "disk_failures_tolerated"], h=6)
 
-    d.row("Deduplication")
-    d.table("Policies", [f'cohesity_dedupe_policy_status{{{S}}} == 1', f'cohesity_dedupe_policy_tapes{{{S}}}', f'cohesity_dedupe_policy_suspended{{{S}}}',
-                         f'cohesity_dedupe_policy_last_run_timestamp_seconds{{{S}}} * 1000 > 0', f'cohesity_dedupe_policy_next_run_timestamp_seconds{{{S}}} * 1000 > 0',
-                         f'cohesity_dedupe_completed_run_ratio{{{S}}}', f'max by (server, policy) (cohesity_dedupe_runs_24h{{{S},status="failed"}})'],
-            rename={"A": None, "B": "Tapes", "C": "Suspended", "D": "Last run", "E": "Next run", "F": "Ratio (last completed)", "G": "Failed runs 24h"},
-            units={"Last run": "dateTimeAsIso", "Next run": "dateTimeAsIso"}, color_cols=["status"],
-            order=["server", "policy", "status", "trigger", "Tapes", "Suspended", "Last run", "Next run", "Ratio (last completed)", "Failed runs 24h"], w=14, h=8)
-    d.table("Reclamation / prune", [f'cohesity_dedupe_maintenance_status{{{S}}} == 1', f'cohesity_dedupe_maintenance_running_since_timestamp_seconds{{{S}}} * 1000 > 0',
-                                    f'cohesity_dedupe_maintenance_last_run_end_timestamp_seconds{{{S}}} * 1000', f'cohesity_dedupe_maintenance_last_run_duration_seconds{{{S}}}'],
-            rename={"A": None, "B": "Running since", "C": "Last run ended", "D": "Last duration"}, units={"Running since": "dateTimeAsIso", "Last run ended": "dateTimeAsIso", "Last duration": "s"},
-            color_cols=["status"], order=["server", "process", "status", "Running since", "Last run ended", "Last duration"], w=10, h=8,
-            desc="Status from the API (idle/running/failed). Times are tracked by the collector, to one collector interval.")
-    d.ts("Dedupe ratio (N:1)", [(f'cohesity_dedupe_completed_run_ratio{{{S}}}', "{{policy}} last run"), (f'cohesity_dedupe_24h_ratio{{{S}}}', "{{policy}} 24h")], "none", w=12)
-    d.ts("Scanned vs unique, last 24h", [(f'cohesity_dedupe_24h_scanned_bytes{{{S}}}', "{{policy}} scanned"), (f'cohesity_dedupe_24h_unique_bytes{{{S}}}', "{{policy}} unique")], "bytes", w=12)
-    d.ts("Dedupe queue", [(f'cohesity_dedupe_queue_jobs{{{S}}}', "{{state}}")], "none", w=8, stack=True)
-    d.ts("Data waiting for dedupe", [(f'cohesity_dedupe_queue_undeduped_bytes{{{S}}}', "waiting")], "bytes", w=8)
-    d.ts("Dedupe throughput", [(f'cohesity_dedupe_queue_throughput_bytes_per_second{{{S}}}', "dedupe"), (f'sum(cohesity_dedupe_active_replication_throughput_bytes_per_second{{{S}}})', "replication")], "Bps", w=8)
-    d.table("Dedupe jobs on this appliance", [f'cohesity_dedupe_job_info{{{S}}}', f'cohesity_dedupe_job_progress_percent{{{S}}}', f'cohesity_dedupe_job_throughput_bytes_per_second{{{S}}}',
-                                              f'cohesity_dedupe_job_undeduped_bytes{{{S}}}', f'cohesity_dedupe_job_first_seen_timestamp_seconds{{{S}}} * 1000'],
-            rename={"A": None, "B": "Progress %", "C": "Throughput", "D": "Un-deduped", "E": "First seen"}, units={"Throughput": "Bps", "Un-deduped": "bytes", "First seen": "dateTimeAsIso"},
-            bar_cols={"Progress %": (0, 100)}, color_cols=["state"], hide=["destination_drive", "parser", "replicationmode", "trigger"],
-            order=["policy", "barcode", "tape", "state", "drive", "Progress %", "Throughput", "Un-deduped", "First seen"], h=8)
+    d.row("Performance")
+    d.ts("Throughput", [(f'cohesity_cluster_throughput_bytes_per_second{{{S}}}', "{{op}}")], "Bps", w=8)
+    d.ts("IOPS", [(f'cohesity_cluster_iops{{{S}}}', "{{op}}")], "iops", w=8)
+    d.ts("Latency", [(f'cohesity_cluster_latency_seconds{{{S}}}', "{{op}}")], "s", w=8)
 
-    d.row("Replication")
-    d.stat("Classic replication", [(f'cohesity_replication_suspended{{{S}}}', None)], w=4, mappings=[{"type": "value", "options": {"0": {"text": "Normal", "color": "green"}, "1": {"text": "SUSPENDED", "color": "red"}}}], thresholds=GREEN_RED)
-    d.stat("Classic queue", [(f'cohesity_replication_queue_jobs_total{{{S},queue="classic"}}', None)], w=4)
-    d.stat("Unique queue", [(f'cohesity_replication_queue_jobs_total{{{S},queue="unique"}}', None)], w=4)
-    d.stat("Oldest unique job age", [(f'time() - (cohesity_unique_replication_oldest_job_start_timestamp_seconds{{{S}}} > 0)', None)], "s", w=4,
-           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 21600}, {"color": "red", "value": 43200}])
-    d.stat("Newest replica age", [(f'min(time() - cohesity_replica_newest_replicated_timestamp_seconds{{{S}}})', None)], "s", w=4,
-           thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 86400}, {"color": "red", "value": 172800}], desc="Time since the most recently updated replica tape held here.")
-    d.stat("Replicas older than 24h", [(f'sum(cohesity_replica_tapes_not_replicated_within{{{S},age="24h"}})', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
-    d.table("Replication jobs on this appliance", [f'cohesity_replication_job_info{{{S}}}', f'cohesity_replication_job_progress_percent{{{S}}}', f'cohesity_replication_job_throughput_bytes_per_second{{{S}}}',
-                                                   f'cohesity_replication_job_remaining_seconds{{{S}}}', f'cohesity_replication_job_first_seen_timestamp_seconds{{{S}}} * 1000'],
-            rename={"A": None, "B": "Progress %", "C": "Throughput", "D": "Remaining", "E": "First seen"}, units={"Throughput": "Bps", "Remaining": "s", "First seen": "dateTimeAsIso"},
-            bar_cols={"Progress %": (0, 100)}, color_cols=["state"], hide=["targetip", "mode"],
-            order=["direction", "queue", "policy", "barcode", "tape", "source", "target", "state", "phase", "Progress %", "Throughput", "Remaining", "First seen"], h=8)
-    d.table("Policy targets", [f'cohesity_dedupe_policy_info{{{S}}}', f'cohesity_dedupe_policy_replication_suspended{{{S}}}'], rename={"A": None, "B": "Target suspended"}, w=8, h=8)
-    d.table("Replication partners", [f'cohesity_dedupe_replication_partner_info{{{S}}}'], rename={"A": None}, w=8, h=8)
-    d.table("Replica tapes by source", [f'cohesity_replica_tapes{{{S}}}', f'cohesity_replica_newest_replicated_timestamp_seconds{{{S}}} * 1000', f'cohesity_replica_oldest_replicated_timestamp_seconds{{{S}}} * 1000',
-                                        f'max by (server, source) (cohesity_replica_tapes_not_replicated_within{{{S},age="24h"}})', f'max by (server, source) (cohesity_replica_tapes_not_replicated_within{{{S},age="7d"}})',
-                                        f'max by (server, source) (cohesity_replica_tapes_not_replicated_within{{{S},age="never"}})'],
-            rename={"A": "Replicas", "B": "Newest", "C": "Oldest", "D": "> 24h", "E": "> 7d", "F": "Never"}, units={"Newest": "dateTimeAsIso", "Oldest": "dateTimeAsIso"}, w=8, h=8)
-    d.ts("Replication queues", [(f'cohesity_replication_queue_jobs{{{S}}}', "{{queue}} {{state}}")], "none", w=12, stack=True)
-    d.ts("Replicas not updated within", [(f'cohesity_replica_tapes_not_replicated_within{{{S}}}', "{{source}} {{age}}")], "none", w=12)
+    d.row("Protection")
+    d.stat("Protection groups", [(f'count(cohesity_group_info{{{S}}}) or vector(0)', None)], w=4)
+    d.stat("Last run failed", [(f'count(cohesity_group_last_run_ok{{{S}}} == 0) or vector(0)', None)], w=4, thresholds=GREEN_RED)
+    d.stat("Last run missed SLA", [(f'sum(cohesity_group_last_run_sla_violated{{{S}}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
+    d.stat("Paused groups", [(f'sum(cohesity_group_paused{{{S}}}) or vector(0)', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
+    d.stat("Runs in progress", [(f'cohesity_runs_active{{{S}}}', None)], w=4)
+    d.stat("Unprotected objects", [(f'cohesity_objects{{{S},protected="no"}}', None)], w=4, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}],
+           desc="Objects on registered sources that no protection group covers.")
+    d.table("Protection groups", [
+        f'cohesity_group_info{{{S}}}',
+        f'max by (cluster, group, status) (cohesity_group_last_run_status{{{S}}} == 1)',
+        f'cohesity_group_last_run_end_timestamp_seconds{{{S}}} * 1000',
+        f'cohesity_group_last_run_duration_seconds{{{S}}}',
+        f'max by (cluster, group) (cohesity_group_last_run_objects{{{S},result="failed"}})',
+        f'cohesity_group_last_run_written_bytes{{{S}}}',
+        f'cohesity_group_last_run_sla_violated{{{S}}}',
+        f'cohesity_group_paused{{{S}}}',
+        f'cohesity_group_protected_objects{{{S}}}',
+    ], rename={"A": None, "B": None, "C": "Last run ended", "D": "Duration", "E": "Failed objects", "F": "Written", "G": "SLA missed", "H": "Paused", "I": "Objects"},
+        units={"Last run ended": "dateTimeAsIso", "Duration": "s", "Written": "bytes"}, color_cols=["status"], hide=["cluster", "group_id"],
+        order=["group", "env", "policy", "status", "Last run ended", "Duration", "Objects", "Failed objects", "Written", "SLA missed", "Paused", "domain", "priority"],
+        sort=("status", False), h=12, filterable=True, desc="Status is the last backup run's (a running run shows running). The full run history is in the cluster UI.")
+    d.table("Failed objects (last run of failed or warned groups)", [f'cohesity_failed_object_info{{{S}}} * 1000'], rename={"A": "When"}, units={"When": "dateTimeAsIso"},
+            color_cols=["result"], order=["When", "group", "object", "env", "source", "result", "attempts", "message"], hide=["cluster"], sort=("When", True), h=8, filterable=True,
+            desc="Capped at 200 objects across 20 groups per collector run. Get-CohesityFailedObjects.ps1 lists them all as CSV.")
+    d.table("Replication and archive targets (last run)", [
+        f'label_replace(cohesity_replication_last_status{{{S}}}, "task", "replication", "", "") or label_replace(cohesity_archive_last_status{{{S}}}, "task", "archive", "", "")',
+    ], rename={"A": None}, color_cols=["status"], hide=["cluster", "target_type"], order=["task", "group", "target", "status"], sort=("status", False), w=12, h=8, filterable=True)
+    d.ts("Runs started in the last 24 hours, by status", [(f'sum by (status) (cohesity_group_runs_24h{{{S}}})', "{{status}}")], "none", w=12, h=8, stack=True)
 
-    d.row("Tapes and libraries")
-    d.table("Virtual libraries", [f'cohesity_vtl_slots{{{S}}}', f'cohesity_vtl_tapes{{{S}}}', f'cohesity_vtl_drives{{{S}}}', f'cohesity_vtl_loaded_drives{{{S}}}',
-                                  f'cohesity_vtl_tapes_empty{{{S}}}', f'cohesity_vtl_tape_used_bytes{{{S}}}', f'cohesity_vtl_tape_size_bytes{{{S}}}'],
-            rename={"A": "Slots", "B": "Tapes", "C": "Drives", "D": "Loaded", "E": "Scratch", "F": "Used", "G": "Allocated"}, units={"Used": "bytes", "Allocated": "bytes"}, w=12, h=8)
-    d.table("Physical libraries and drives", [f'cohesity_physical_drive_status{{{S}}} == 1', f'cohesity_physical_drive_disabled{{{S}}}'],
-            rename={"A": None, "B": "Disabled"}, color_cols=["status"], w=12, h=8)
-    d.table("Tapes by location", [f'cohesity_tapes{{{S}}}', f'cohesity_tapes_empty{{{S}}}', f'cohesity_tapes_used_bytes{{{S}}}', f'cohesity_tapes_size_bytes{{{S}}}'],
-            rename={"A": "Tapes", "B": "Empty", "C": "Used", "D": "Allocated"}, units={"Used": "bytes", "Allocated": "bytes"}, w=8, h=8)
-    d.table("Tape status counts", [f'cohesity_tapes_by_status{{{S}}}'], rename={"A": "Tapes"}, w=8, h=8, sort=("field", False))
-    d.table("Import/export jobs", [f'cohesity_iejob_jobs_by_type{{{S}}} > 0'], rename={"A": "Jobs"}, color_cols=["status"], w=8, h=8)
-    d.ts("Tape data used", [(f'cohesity_tapes_used_bytes{{{S}}}', "{{location}}")], "bytes", w=12, h=7)
-    d.ts("Loaded drives", [(f'cohesity_vtl_loaded_drives{{{S}}}', "{{library}}")], "none", w=12, h=7)
+    d.row("Nodes")
+    d.table("Nodes", [
+        f'cohesity_node_info{{{S}}}',
+        f'100 * cohesity_node_used_bytes{{{S}}} / cohesity_node_capacity_bytes{{{S}}}',
+        f'cohesity_node_capacity_bytes{{{S}}}',
+        f'cohesity_node_offline_disks{{{S}}}',
+        f'max by (cluster, node, state) (cohesity_node_removal{{{S}}})',
+    ], rename={"A": None, "B": "Used %", "C": "Capacity", "D": "Offline disks", "E": None}, units={"Capacity": "bytes"}, bar_cols={"Used %": (0, 100)}, color_cols=["state"],
+        hide=["cluster", "node_id"], order=["node", "ip", "model", "hardware", "serial", "version", "Used %", "Capacity", "Offline disks", "state", "type"], h=7)
 
-    d.row("Events")
-    d.ts("Events per hour by severity", [(f'sum by (severity) (increase(cohesity_events_total{{{S}}}[1h]))', "{{severity}}")], "none", w=24, h=6, bars=True, stack=True)
-    d.table("Recent warnings, errors and criticals", [f'cohesity_event_recent{{{S}}} * 1000'], rename={"A": "When"}, units={"When": "dateTimeAsIso"}, color_cols=["severity"],
-            order=["When", "severity", "id", "message"], hide=["time", "server"], sort=("When", True), h=10, filterable=True,
-            desc="The 20 newest non-informational events. The full log is archived daily under events\\ on the monitoring host.")
+    d.row("Sources, targets and licence")
+    d.table("Registered sources", [f'cohesity_source_status{{{S}}}', f'cohesity_source_last_refresh_timestamp_seconds{{{S}}} * 1000'],
+            rename={"A": None, "B": "Last refresh"}, units={"Last refresh": "dateTimeAsIso"}, color_cols=["status"], hide=["cluster"], order=["source", "env", "status", "Last refresh"], w=12, h=8, filterable=True)
+    d.table("Objects by environment", [f'cohesity_objects_by_env{{{S},protected="yes"}}', f'cohesity_objects_by_env{{{S},protected="no"}}'],
+            rename={"A": "Protected", "B": "Unprotected"}, hide=["cluster", "protected"], order=["env", "Protected", "Unprotected"], sort=("Unprotected", True), w=6, h=8)
+    d.table("Archive targets", [f'cohesity_external_target_info{{{S}}}', f'max by (cluster, target) (cohesity_vault_usage_bytes{{{S}}})'],
+            rename={"A": None, "B": "Stored"}, units={"Stored": "bytes"}, color_cols=["status"], hide=["cluster", "target_id", "ownership"], w=6, h=8)
+    d.table("Remote clusters", [f'cohesity_remote_cluster_info{{{S}}}', f'cohesity_remote_cluster_tls_enabled{{{S}}}'], rename={"A": None, "B": "TLS"}, bool_cols=["TLS"],
+            hide=["cluster", "remote_id"], w=8, h=6)
+    d.table("Licence", [f'cohesity_license_entitled_gib{{{S}}}', f'cohesity_license_used_gib{{{S}}}', f'(cohesity_license_expiry_timestamp_seconds{{{S}}} - time()) / 86400'],
+            rename={"A": "Entitled GiB", "B": "Used GiB", "C": "Days to expiry"}, units={"Days to expiry": "d"}, hide=["cluster"], w=8, h=6)
+    d.table("SmartFiles views", [f'cohesity_views{{{S}}}'], rename={"A": "Views"}, hide=["cluster"], w=8, h=6)
 
-    d.row("Platform and network")
-    d.table("Patches", [f'cohesity_patch_info{{{S}}}'], rename={"A": None}, hide=["server"], w=12, h=7)
-    d.table("Network interfaces", [f'cohesity_nic_speed_mbps{{{S}}}', f'cohesity_nic_mtu{{{S}}}', f'cohesity_nic_dhcp{{{S}}}'], rename={"A": "Speed Mb/s", "B": "MTU", "C": "DHCP"}, hide=["server"], w=12, h=7)
-    d.table("FC / SCSI adapters", [f'cohesity_adapter_paths{{{S}}}'], rename={"A": "Paths"}, hide=["server"], w=12, h=6)
-    d.table("Options", [f'cohesity_server_option_enabled{{{S}}}', f'cohesity_encryption_option{{{S}}}'], rename={"A": "Enabled", "B": "Enabled "}, hide=["server"], w=6, h=6, merge=False)
-    d.table("Failover setup", [f'cohesity_failover_config_info{{{S}}}', f'cohesity_failover_autorecovery_enabled{{{S}}}'], rename={"A": None, "B": "Auto failback"}, hide=["server"], w=6, h=6)
+    d.row("Alerts")
+    d.ts("New alerts per hour by severity", [(f'sum by (severity) (increase(cohesity_alerts_total{{{S}}}[1h]))', "{{severity}}")], "none", w=24, h=6, bars=True, stack=True)
+    d.table("Open critical and warning alerts", [f'cohesity_alert_recent{{{S}}} * 1000'], rename={"A": "Latest"}, units={"Latest": "dateTimeAsIso"}, color_cols=["severity"],
+            order=["Latest", "severity", "category", "name", "message", "occurrences", "code", "id"], hide=["cluster"], sort=("Latest", True), h=10, filterable=True,
+            desc="The 20 newest open critical and warning alerts. Every new alert, info included, is archived daily under events\\ on the monitoring host.")
 
     d.row("Collector")
     d.stat("Package version", [('cohesity_collector_info', '{{version}}')], w=6, text_mode="name", thresholds=BLUE, desc="Version of the installed Cohesity monitoring package (VERSION file in the install folder).")
@@ -702,63 +704,75 @@ def instance(html=False):
     d.stat("Checks failing", [(f'count(cohesity_check_success{{{S}}} == 0) or vector(0)', None)], w=6, decimals=0, thresholds=GREEN_RED)
     d.stat("Collection time", [(f'cohesity_collect_duration_seconds{{{S}}}', None)], "s", w=6, thresholds=BLUE, decimals=1)
     d.table("Checks", [f'cohesity_check_success{{{S}}}', f'cohesity_check_last_success_timestamp_seconds{{{S}}} * 1000'],
-            rename={"A": "OK", "B": "Last success"}, units={"Last success": "dateTimeAsIso"}, bool_cols=["OK"], hide=["server"], sort=("OK", False), w=12, h=12)
+            rename={"A": "OK", "B": "Last success"}, units={"Last success": "dateTimeAsIso"}, bool_cols=["OK"], hide=["cluster"], sort=("OK", False), w=12, h=12)
     d.ts("Collection time", [(f'cohesity_collect_duration_seconds{{{S}}}', "seconds")], "s", w=12, h=12)
     write(d, HTML_DIR if html else OUT_DIR)
 
 
 # ============================================================================ Patch management
 def patches(html=False):
-    S = 'server=~"$server"'
-    d = Dashboard("Cohesity Patch Management", "cohesity-patches", S, "multi", time_from="now-7d", refresh="5m", description="Versions, builds, patches and platform details across the estate.", html=html)
+    S = 'cluster=~"$cluster"'
+    d = Dashboard("Cohesity Patch Management", "cohesity-patches", S, "multi", time_from="now-7d", refresh="5m", description="Software versions, patches, node hardware and licences across the estate.", html=html)
     d.row("Versions")
-    d.stat("Appliances per version", [(f'count by (version) (cohesity_info{{{S}}})', "{{version}}")], w=8, thresholds=BLUE)
-    d.stat("Appliances per build", [(f'count by (build) (cohesity_info{{{S}}})', "{{build}}")], w=8, thresholds=BLUE)
-    d.stat("Appliances per OS", [(f'count by (osversion) (cohesity_server_info{{{S}}})', "{{osversion}}")], w=8, thresholds=BLUE)
-    d.table("Appliances", [
-        f'max by (server, hostname, osversion, kernel, make, model, virtual) (cohesity_server_info{{{S}}})',
-        f'max by (server, product, version, build, apiversion) (cohesity_info{{{S}}})',
-        f'max by (server) (cohesity_patches_installed{{{S}}})',
-        f'max by (server) (cohesity_server_memory_bytes{{{S}}})',
-        f'max by (server) (cohesity_server_cpus{{{S}}})',
-        f'max by (server) (cohesity_time_offset_seconds{{{S}}})',
-        f'max by (server) (cohesity_ntp_servers{{{S}}})',
-        f'max by (server) (cohesity_server_option_enabled{{{S},option="failover"}})',
-        f'max by (server) (cohesity_encryption_option{{{S},option="encryptionactive"}})',
-    ], rename={"A": None, "B": None, "C": "Patches", "D": "Memory", "E": "CPUs", "F": "Clock offset", "G": "NTP servers", "H": "Failover", "I": "Encryption active"},
-        units={"Memory": "bytes", "Clock offset": "s"},
-        order=["server", "hostname", "product", "version", "build", "Patches", "osversion", "kernel", "make", "model", "virtual", "Memory", "CPUs", "Clock offset", "NTP servers", "Failover", "Encryption active", "apiversion"],
-        sort=("build", False), h=16, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
-        desc="Build is the server build number; a dash and number after it is the patch level. Uptime is not exposed by the Cohesity REST API (the console's Service Uptime is a web GUI value); it can be added from SNMP sysUpTime if SNMP is enabled on the appliances.")
-    d.row("Patches")
-    d.table("Installed patches", [f'cohesity_patch_info{{{S}}}'], rename={"A": None}, sort=("server", False), h=12, filterable=True, w=16)
-    d.table("Patch coverage", [f'count by (patch) (cohesity_patch_info{{{S}}})', f'count(cohesity_up{{{S}}})'], rename={"A": "Appliances with patch", "B": None}, merge=False, w=8, h=12,
-            sort=("Appliances with patch", False), desc="How many appliances have each patch. Compare with the appliance count in the Versions row to spot gaps.")
+    d.stat("Clusters per version", [(f'count by (version) (cohesity_info{{{S}}})', "{{version}}")], w=8, thresholds=BLUE)
+    d.stat("Clusters per patch", [(f'count by (patch) (label_replace(cohesity_info{{{S}}}, "patch", "none", "patch", ""))', "{{patch}}")], w=8, thresholds=BLUE)
+    d.stat("Nodes per model", [(f'count by (model) (cohesity_node_info{{{S}}})', "{{model}}")], w=8, thresholds=BLUE)
+    d.table("Clusters", [
+        f'max by (cluster, name, version, patch, type, deployment) (cohesity_info{{{S}}})',
+        f'max by (cluster) (cohesity_patches_installed{{{S}}})',
+        f'max by (cluster) (cohesity_patches_available{{{S}}})',
+        f'max by (cluster) (cohesity_cluster_nodes{{{S}}})',
+        f'max by (cluster) (cohesity_cluster_upgrade_aborted{{{S}}})',
+        f'max by (cluster) (cohesity_cluster_patch_apply_aborted{{{S}}})',
+        f'max by (cluster) (cohesity_time_offset_seconds{{{S}}})',
+        f'max by (cluster) (cohesity_cluster_encryption_enabled{{{S}}})',
+    ], rename={"A": None, "B": "Patches applied", "C": "Patches available", "D": "Nodes", "E": "Upgrade aborted", "F": "Patch aborted", "G": "Clock offset", "H": "Encryption"},
+        units={"Clock offset": "s"}, bool_cols=["Encryption"],
+        order=["cluster", "name", "version", "patch", "Patches applied", "Patches available", "Nodes", "Upgrade aborted", "Patch aborted", "Clock offset", "Encryption", "type", "deployment"],
+        sort=("version", False), h=7, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
+        desc="Version is the cluster software version; patch is the applied service patch level. Patches available counts patches already downloaded to the cluster and ready to apply.")
+    d.row("Patches and nodes")
+    d.table("Applied patches", [f'cohesity_patch_info{{{S}}} * 1000'], rename={"A": "Applied"}, units={"Applied": "dateTimeAsIso"}, order=["cluster", "service", "version", "level", "Applied"],
+            sort=("cluster", False), h=10, filterable=True, w=12)
+    d.table("Node software and uptime", [f'cohesity_node_status_info{{{S}}}', f'cohesity_node_last_upgrade_timestamp_seconds{{{S}}} * 1000'],
+            rename={"A": None, "B": "Last upgrade"}, units={"Last upgrade": "dateTimeAsIso"}, hide=["node_id", "operation"], order=["cluster", "ip", "version", "uptime", "Last upgrade"],
+            sort=("cluster", False), h=10, filterable=True, w=12)
+    d.table("Node hardware", [f'cohesity_node_info{{{S}}}'], rename={"A": None}, hide=["node_id"], order=["cluster", "node", "ip", "model", "hardware", "serial", "version", "type"],
+            sort=("cluster", False), h=10, filterable=True)
+    d.row("Licences")
+    d.table("Licence by feature", [f'cohesity_license_entitled_gib{{{S}}}', f'cohesity_license_used_gib{{{S}}}', f'100 * cohesity_license_used_gib{{{S}}} / cohesity_license_entitled_gib{{{S}}}',
+                                   f'(cohesity_license_expiry_timestamp_seconds{{{S}}} - time()) / 86400'],
+            rename={"A": "Entitled GiB", "B": "Used GiB", "C": "Used %", "D": "Days to expiry"}, units={"Days to expiry": "d"}, bar_cols={"Used %": (0, 100)},
+            order=["cluster", "feature", "Entitled GiB", "Used GiB", "Used %", "Days to expiry"], sort=("Days to expiry", False), h=10, filterable=True,
+            desc="From v1 licenseUsage. Over 100% means the feature uses more than its entitlement.")
     write(d, HTML_DIR if html else OUT_DIR)
 
 
-# ============================================================================ Events
-def events(html=False):
-    S = 'server=~"$server"'
-    d = Dashboard("Cohesity Events", "cohesity-events", S, "multi", description="Appliance event logs across the estate. Informational events are counted but not listed.", html=html)
-    d.row("Last 24 hours")
-    d.stat("Critical", [(f'sum(increase(cohesity_events_total{{{S},severity="critical"}}[24h])) or vector(0)', None)], w=6, decimals=0, thresholds=GREEN_RED)
-    d.stat("Error", [(f'sum(increase(cohesity_events_total{{{S},severity="error"}}[24h])) or vector(0)', None)], w=6, decimals=0, thresholds=GREEN_RED)
-    d.stat("Warning", [(f'sum(increase(cohesity_events_total{{{S},severity="warning"}}[24h])) or vector(0)', None)], w=6, decimals=0, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
-    d.stat("Informational", [(f'sum(increase(cohesity_events_total{{{S},severity="informational"}}[24h])) or vector(0)', None)], w=6, decimals=0, thresholds=BLUE)
-    d.ts("Events per hour by severity", [(f'sum by (severity) (increase(cohesity_events_total{{{S},severity!="informational"}}[1h]))', "{{severity}}")], "none", w=12, h=7, bars=True, stack=True)
-    d.ts("Errors and criticals per hour by appliance", [(f'sum by (server) (increase(cohesity_events_total{{{S},severity=~"error|critical"}}[1h]))', "{{server}}")], "none", w=12, h=7, bars=True, stack=True)
-    d.row("Recent events")
-    d.table("Warnings, errors and criticals (20 newest per appliance)", [f'cohesity_event_recent{{{S}}} * 1000'], rename={"A": "When"}, units={"When": "dateTimeAsIso"}, color_cols=["severity"],
-            order=["When", "server", "severity", "id", "message"], hide=["time"], sort=("When", True), h=18, filterable=True, links=[{"title": "Open instance", "url": INSTANCE_URL}],
-            desc="Filter any column with the funnel icon. The complete log, informational events included, is archived daily under events\\ on the monitoring host.")
-    d.table("Event log collection", [f'cohesity_eventlog_columns_detected{{{S}}}', f'cohesity_check_success{{{S},check="eventlog"}}'],
-            rename={"A": "Columns recognised", "B": "Collecting"}, bool_cols=["Columns recognised", "Collecting"], hide=["check"], h=6)
+# ============================================================================ Alerts
+def alerts(html=False):
+    S = 'cluster=~"$cluster"'
+    d = Dashboard("Cohesity Alerts", "cohesity-alerts", S, "multi", description="Cluster alerts across the estate. Informational alerts are counted but not listed.", html=html)
+    d.row("Open now")
+    d.stat("Critical", [(f'sum(cohesity_alerts_open{{{S},severity="critical"}}) or vector(0)', None)], w=6, decimals=0, thresholds=GREEN_RED)
+    d.stat("Warning", [(f'sum(cohesity_alerts_open{{{S},severity="warning"}}) or vector(0)', None)], w=6, decimals=0, thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}])
+    d.stat("Info", [(f'sum(cohesity_alerts_open{{{S},severity="info"}}) or vector(0)', None)], w=6, decimals=0, thresholds=BLUE)
+    d.stat("New in the last 24 hours", [(f'sum(increase(cohesity_alerts_total{{{S}}}[24h])) or vector(0)', None)], w=6, decimals=0, thresholds=BLUE)
+    d.ts("New alerts per hour by severity", [(f'sum by (severity) (increase(cohesity_alerts_total{{{S},severity!="info"}}[1h]))', "{{severity}}")], "none", w=12, h=7, bars=True, stack=True)
+    d.ts("Open critical and warning alerts by cluster", [(f'sum by (cluster) (cohesity_alerts_open{{{S},severity=~"critical|warning"}})', "{{cluster}}")], "none", w=12, h=7)
+    d.row("Open alerts")
+    d.table("Critical and warning (20 newest per cluster)", [f'cohesity_alert_recent{{{S}}} * 1000'], rename={"A": "Latest"}, units={"Latest": "dateTimeAsIso"}, color_cols=["severity"],
+            order=["Latest", "cluster", "severity", "category", "name", "message", "occurrences", "code", "id"], sort=("Latest", True), h=11, filterable=True,
+            links=[{"title": "Open instance", "url": INSTANCE_URL}],
+            desc="Filter any column with the funnel icon. Every new alert, info included, is archived daily under events\\ on the monitoring host.")
+    d.table("Open alerts by category", [f'cohesity_alerts_open_by_category{{{S}}}'], rename={"A": "Open"}, color_cols=["severity"], order=["cluster", "severity", "category", "Open"],
+            sort=("Open", True), w=12, h=8)
+    d.table("Alerts active in the last 24 hours, by type", [f'cohesity_alerts_active{{{S}}} > 0'], rename={"A": "Alerts"}, color_cols=["severity"], order=["cluster", "bucket", "severity", "Alerts"],
+            sort=("Alerts", True), w=12, h=8, desc="From v1 stats/alerts: hardware, software, data service and maintenance alerts.")
     write(d, HTML_DIR if html else OUT_DIR)
 
 
 if __name__ == '__main__':
     os.makedirs(HTML_DIR, exist_ok=True)
-    for build in (fleet, activity, instance, patches, events):
+    for build in (fleet, activity, instance, patches, alerts):
         build()
         build(html=True)

@@ -3,24 +3,25 @@
 each and fails when a panel shows an error, a panel plugin is missing, or (with --cards) the Fleet dashboard does
 not show its Business Text estate cards or a dashboard has no card section. With --full the screenshots show the whole page as a viewer sees it (Grafana's
 menu and toolbar, every panel down to the last), like docs/images. Needs Python Playwright and its Chromium. Usage:
-  python3 tools/test/render_dashboards.py [--grafana http://127.0.0.1:3000] [--out tools/test/out/screens] [--cards] [--full] [--from now-15m]"""
+  python3 tools/test/render_dashboards.py [--grafana http://127.0.0.1:3000] [--out tools/test/out/screens] [--cards] [--full] [--from now-15m] [--chromium PATH]"""
 import argparse, os
 from playwright.sync_api import sync_playwright
 
-UIDS = ["cohesity-fleet", "cohesity-activity", "cohesity-instance", "cohesity-patches", "cohesity-events"]
+UIDS = ["cohesity-fleet", "cohesity-activity", "cohesity-instance", "cohesity-patches", "cohesity-alerts"]
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--grafana", default="http://127.0.0.1:3000")
 ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "screens"))
 ap.add_argument("--cards", action="store_true", help="require the Business Text card sections and Fleet's eight estate cards (the plugin is installed)")
 ap.add_argument("--full", action="store_true", help="whole page with Grafana's menu, not kiosk mode")
+ap.add_argument("--chromium", help="Chromium executable to use instead of Playwright's own download")
 ap.add_argument("--from", dest="time_from", help="time range start instead of the dashboard's own, e.g. now-15m for a fresh mock")
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 
 problems = []
 with sync_playwright() as pw:
-    browser = pw.chromium.launch()
+    browser = pw.chromium.launch(executable_path=args.chromium) if args.chromium else pw.chromium.launch()
     # A locale of its own: headless Chromium on a POSIX locale reports en-US@posix, which Grafana's Intl calls reject.
     page = browser.new_page(viewport={"width": 1920, "height": 1080}, locale="en-GB")
     for uid in UIDS:

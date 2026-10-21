@@ -1,157 +1,558 @@
-import json, sys, re
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import urlparse, parse_qs
-SID="abc-123"; state={"expire_once": "--expire" in sys.argv}
-import time, gzip
-NOW=int(time.time())
-def loc(i):
-    if i<2000: return {"type":"libslot","libstdid":15 if i<1500 else 22,"slotdriveno":i}
-    if i<2100: return {"type":"vault"}
-    return {"type":"replica"}
-TAPES=[{"id":10000000+i,"name":f"VT-{i:05}","barcode":f"B{i:05}","sizemb":1024,"usedmb":0 if i%10==0 else 10,
-        "location":loc(i),"parentlibvid":(15 if i<1500 else 22) if i<2000 else 0,"worm":i%50==0,
-        "source":"VTL-SRC-1" if i>=2100 else "","replicated":(NOW-3600*(i-2100)) if i>=2105 else 0,
-        "devicestatus":"online","dedupestatus":"failed" if i==7 else ("pending" if i==8 else "completed"),
-        "vitstatus":"pure","encryptionstatus":"","replicationenabled":i<1500,
-        "replstatus":"completedfailed" if i==9 else ""} for i in range(2500)]
-EVENTS=[]  # (epoch, type, id, msg)
-for k in range(30): EVENTS.append((NOW-86400+k*2000, "I" if k%5 else "W", 1000+k, f"Event message {k}, with comma"))
-EVENTS.append((NOW-100,"E",7001,'Replication of "VT-1" failed'))
-EVENTS.append((NOW-50,"C",9001,"Deduplication repository disk offline"))
-def fmt(t): return time.strftime("%Y%m%d%H%M%S", time.localtime(t))
-class H(BaseHTTPRequestHandler):
-    def log_message(self,*a): pass
-    def send(self,obj,code=200,cookie=None):
-        b=json.dumps(obj).encode(); self.send_response(code); self.send_header("Content-Type","application/json")
-        if cookie: self.send_header("Set-Cookie",f"session_id={cookie}; Path=/")
-        self.end_headers(); self.wfile.write(b)
-    def authed(self): return f"session_id={SID}" in (self.headers.get("Cookie") or "")
-    def do_POST(self):
-        n=int(self.headers.get("Content-Length") or 0); body=json.loads(self.rfile.read(n) or b"{}")
-        p=urlparse(self.path).path
-        if p=="/obd/auth/login":
-            if body.get("password")!="pw": return self.send({"rc":10001})
-            return self.send({"rc":0,"id":SID,"type":"user"},cookie=SID)
-        if p=="/obd/auth/logout": return self.send({"rc":0})
-        self.send({"rc":1},404)
-    def do_PUT(self):
-        n=int(self.headers.get("Content-Length") or 0); body=json.loads(self.rfile.read(n) or b"{}")
-        if not self.authed(): return self.send({"rc":401},401)
-        if urlparse(self.path).path!="/obd/server/event": return self.send({"rc":1},404)
-        rng=body.get("range","")
-        a,_,b=rng.partition("-")
-        if len(a)!=14: return self.send({"rc":12345})
-        b=b or "99999999999999"
-        # one new event per call
-        EVENTS.append((int(time.time()),"W",5000+len(EVENTS),f"New warning {len(EVENTS)}"))
-        rows=["\"Type\",\"Date\",\"Time\",\"ID\",\"Event Message\""]
-        if "--noheader" in sys.argv: rows=[]
-        for t,ty,i,msg in EVENTS:
-            if a<=fmt(t)<=b: rows.append('"%s","%s","%s","%d","%s"'%(ty,time.strftime("%m/%d/%Y",time.localtime(t)),time.strftime("%H:%M:%S",time.localtime(t)),i,msg.replace('"','""')))
-        data=("\r\n".join(rows)+"\r\n").encode("latin-1")
-        if "--gzip" in sys.argv: data=gzip.compress(data)
-        self.send_response(200); self.send_header("Content-Type","application/csv;charset=ISO-8859-1")
-        self.send_header("Content-Disposition","attachment; filename=EventLog.csv"); self.end_headers(); self.wfile.write(data)
-    def do_GET(self):
-        u=urlparse(self.path); p=u.path; q=parse_qs(u.query)
-        if not self.authed(): return self.send({"rc":401},401)
-        if state["expire_once"] and p=="/obd/dedupepolicy":
-            state["expire_once"]=False; return self.send({"rc":401},401)
+"""Mock Cohesity REST API (v1 public + v2) for the test kit. Made-up data, no real cluster names or addresses.
 
-        EXTRA={
-          "/obd/server/properties/version":{"rc":0,"data":{"product":"FalconStor Virtual Tape Library Server","version":"11.11","build":"12179-01","apiversion":"11.11"}},
-          "/obd/server/failover/status":{"rc":0,"data":{"status":"normal"}},
-          "/obd/physicalresource/storagepool":{"rc":0,"data":{"storagepools":[{"id":1,"name":"StoragePool-1","resourcetype":"all","size":1073727143936,"used":91271200768}]}},
-          "/obd/physicalresource/physicaldevice":{"rc":0,"data":{"total":3,"physicaldevices":[
-             {"id":"a","name":"DELL:MD38xxf","acsl":"101:0:0:0","type":"disk","category":"virtual","reservation":"deduplication","size":21474836480,"used":1000,"isforeign":False,"status":"online"},
-             {"id":"b","name":"DELL \"MD\"","acsl":"101:0:0:1","type":"disk","category":"virtual","reservation":"tapes","size":21474836480,"used":0,"isforeign":False,"status":"offline"},
-             {"id":"c","name":"partner","acsl":"101:0:0:2","type":"disk","category":"virtual","reservation":"tapes","size":1,"used":0,"isforeign":True,"status":"online"}]}},
-          "/obd/server/storagethreshold":{"rc":0,"threshold":90},
-          "/obd/vtl/activities/dedupequeue":{"rc":0,"data":[{"name":"VT-12","id":10000012,"barcode":"B00012","policy":"Nightly","state":"indexrepli","undedupedatamb":100,"throughputmbps":5,"progress":40},{"name":"VT-13","id":10000013,"barcode":"B00013","policy":"Nightly","state":"queued","undedupedatamb":50,"throughputmbps":0,"progress":0}]},
-          "/obd/vtl/activities/dedupequeue/10000012":{"rc":0,"data":{"tape":"VT-12","barcode":"B00012","policy":"Nightly","policyid":2,"state":"indexrepli","trigger":"schedule","sourcedrive":"S16","destinationdrive":"","replicationmode":"single","undedupedatamb":100,"targetservers":[{"name":"VTL-B","ipaddress":"192.0.2.12","replicationstatus":"indexrepli","throughputmbps":2,"progress":40}]}},
-          "/obd/vtl/activities/dedupequeue/10000013":{"rc":0,"data":{"tape":"VT-13","barcode":"B00013","policy":"Nightly","policyid":2,"state":"queued","trigger":"schedule","sourcedrive":"","destinationdrive":"","replicationmode":"","undedupedatamb":50,"targetservers":[]}},
-          "/obd/vtl/activities/replicationqueue":{"rc":0,"data":[{"name":"VT-1","id":10000001,"barcode":"B00001","type":"typeclassic","mode":"moderegular","state":"running"},{"name":"VT-2","id":10000002,"barcode":"B00002","type":"typeclassic","mode":"moderegular","state":"waiting"}]},
-          "/obd/vtl/activities/replicationqueue/10000001":{"rc":0,"data":{"tape":"VT-1","type":"typeclassic","mode":"moderegular","state":"running","trigger":"schedule","watermarkmb":0,"targetservers":[{"name":"VTL-B","ipaddress":"192.0.2.12"}],"retryinterval":60,"retrycount":1,"leftretrycount":1,"nextretrytime":0}},
-          "/obd/vtl/activities/replicationqueue/10000002":{"rc":0,"data":{"tape":"VT-2","type":"typeclassic","mode":"moderegular","state":"waiting","trigger":"schedule","watermarkmb":0,"targetservers":[{"name":"VTL-B","ipaddress":"192.0.2.12"}],"retryinterval":60,"retrycount":1,"leftretrycount":1,"nextretrytime":NOW+300}},
-          "/obd/vtl/activities/uniquereplicationqueue":{"rc":0,"data":[{"policy":"p1","sourceserver":"VTL-C","sourcebarcode":"C00001","replicabarcode":"C00001","lvittape":"VTL-C-VT-1","lvitid":10003568,"lvitbarcode":"C00001","starttime":NOW-900,"status":" running "}]},
-          "/obd/vtl/activities/replicationqueue/setting":{"rc":0,"status":"suspended"},
-        }
-        EXTRA.update({
-          "/obd/server/properties/time":{"rc":0,"data":{"systemtime":time.strftime("%Y-%m-%d %H:%M:%S",time.localtime()),"epochetime":str(int(time.time())+3)}},
-          "/obd/physicalresource/physicaladapter":{"rc":0,"data":{"total":2,"physicaladapters":[{"vendor":"MegaRAID","id":"100","type":"scsi","mode":"","wwpn":"","paths":1},{"vendor":"QLogic","id":"102","type":"fc","mode":"dual","wwpn":"21-00-00-1b-32-07-b8-9b","paths":16}]}},
-          "/obd/deduplication":{"rc":0,"data":{"enabled":True,"name":"Localcluster-OBD190","type":"standard","mode":"flexible","failoverenabled":False,"encryption":False,"nodetype":"active","objectstoragegb":0,
-             "nodes":[{"ipaddress":"10.8.25.190","name":"OBD190","type":"active","datadisks":[{"id":3723,"name":"SIR_Data-000","size":951256612864},{"id":3724,"name":"SIR_Data-001","size":536859377664}],
-               "indexes":[{"id":3719,"name":"SIR_Index-00","size":85383446528}],"folders":[{"id":3720,"name":"SIR_Folder-00","size":438889873408}]}]}},
-          "/obd/physicallibrary/status":{"rc":0,"data":{"ptlstat":[{"id":181,"status":"online","tapes":60,"loadedtapes":1,"slots":4,"serialno":"122R400A0G","disabled":False,
-             "ptdstat":[{"id":182,"status":"loaded","barcode":"001B0003","serialno":"1493955380","disabled":False},{"id":183,"status":"empty","barcode":"","serialno":"1493955381","disabled":False}]}],"acslsptlstat":[]}},
-          "/obd/physicallibrary/181":{"rc":0,"data":{"name":"IBM-TS3100-181","status":"online","standardstat":{"ptdstat":[{"id":182,"name":"IBM-ULT3580-182"},{"id":183,"name":"IBM-ULT3580-183"}]}}},
-          "/obd/activity/iejob":{"rc":0,"data":{"jobs":[{"jobid":60,"jobtype":"exportphysicaltapelib","status":"running","starttime":int(time.time())-600,"transferedmb":300},{"jobid":61,"jobtype":"exportphysicaltapelib","status":"failed","starttime":0}]}},
-          "/obd/virtualdrive":{"rc":0,"data":[]},
-          "/obd/tle/reclaim/tapes":{"rc":0,"data":{"libs":[{"id":166,"name":"L","tapes":[{"id":1},{"id":2}]}],"vault":[{"id":3}]}},
-          "/obd/server/properties/info":{"rc":0,"data":{"isvirtualappliance":False,"osversion":"Red Hat Enterprise Linux Server release 7.6 (Maipo)","kernelversion":"Linux 3.10.0","processor":["x"]*8,"memory":16651386880,"swap":4294967296,"role":"cohesity","make":"Dell","model":"R740","location":"DC1","description":"","fmsinstalled":False,"fmsrunning":False}},
-          "/obd/server/properties/host":{"rc":0,"data":{"hostname":"VTL-A"}},
-          "/obd/patches":{"rc":0,"patches":[{"name":"update-is708211","desc":"Identification: patch fixing issues with snapshots.\n"}]},
-          "/obd/server/options":{"rc":0,"data":{"configrepo":True,"failover":False,"fctarget":True,"iscsitarget":False,"emailalerts":False,"autosavetoftp":"true","ndmp":False,"guid":""}},
-          "/obd/encryption":{"rc":0,"data":{"supportencrypt":True,"tapeencryptenabled":False,"dedupencryptenabled":True,"encryptionactive":True}},
-          "/obd/server/failover":{"rc":0,"data":{"type":"none"}},
-          "/obd/server/properties/network":{"rc":0,"data":{"domain":"lab","dns":["10.8.1.2"],"gateway":"10.8.1.1","ssh":True,"sftp":True,"nics":[{"name":"eth0","mtu":1500,"speed":1000,"dhcp":False,"ifgcfg":[{"number":-1,"ipaddress":"192.0.2.11","netmask":"255.255.255.0"}]},{"name":"eth1","mtu":9000,"speed":10000,"dhcp":False,"ifcfg":[]}]}},
-          "/obd/network/bonding":{"rc":0,"groups":[]},
-          "/obd/server/properties/ntp":{"rc":"0","data":["0.pool.ntp.org","1.pool.ntp.org"]},
-          "/obd/dedupereplication":{"rc":0,"data":{"sources":[],"targets":[{"name":"VTL-B","vtls":True,"protocol":"TCP","tcpoptions":{"encryption":False,"timeout":5,"servers":[{"name":"VTL-B","ipaddress":"192.0.2.12"}]}}]}},
-          "/obd/virtualtape/lvitsource":{"rc":0,"data":[]},
-          "/obd/deduplication/reclamation":{"rc":0,"data":{"usage":{"enabled":True,"interval":10},"schedule":{"enabled":True,"weekdays":[0,3],"starttime":"19:00"}}},
-          "/obd/deduplication/cleanup":{"rc":0,"cleandisk":False},
-          "/obd/tle/properties":{"rc":0,"data":{"compression":True,"retaintape":False,"reclamationthreshold":92,"migrationthreshold":92}},
-          "/obd/activity/iejob/properties":{"rc":0,"data":{"retry":True,"retrycount":2,"retryinterval":10}},
-          "/obd/server/activitydatabase":{"rc":0,"maxsize":50,"maxdays":365},
-          "/obd/client":{"rc":0,"data":{"total":2,"clients":[{"id":1,"name":"tsm1","fcenabled":True,"iscsienabled":False},{"id":2,"name":"tsm2","fcenabled":True,"iscsienabled":True}]}},
-          "/obd/physicalresource/physicaladapter/fcclientinitiators":{"rc":0,"data":[{"wwpn":"1","assigned":"client"},{"wwpn":"2","assigned":""}]},
-          "/obd/client/iscsitarget":{"rc":0,"data":{"total":0,"iscsitargets":[]}},
-          "/obd/client/iscsiclientinitiators":{"rc":0,"data":[]},
-          "/obd/client/hostedbackup":{"rc":0,"data":{"devices":[]}},
-          "/obd/user/account":{"rc":0,"data":{"total":2,"users":[{"type":"A","user":"fsadmin","id":1},{"type":"R","user":"mon","id":2}]}},
-          "/obd/objectstorage":{"rc":0,"data":{"accounts":[]}},
-          "/obd/server/syslogalert":{"rc":0,"data":{"enabled":True,"frequency":60,"memorize":1440,"incidents":[{"pattern":"x","label":"y"}]}},
-          "/obd/server/properties/autosavetoftp":{"rc":0,"data":{"enabled":False}},
-        })
-        m=re.match(r"/obd/logicalresource/status/(\d+)$",p)
-        if m: return self.send({"rc":0,"status":"incomplete" if m.group(1)=="3724" else "online"})
-        m=re.match(r"/obd/dedupepolicy/activestatus/(\d+)$",p)
-        if m:
-            if m.group(1)=="2": return self.send({"rc":0,"data":{"scan":[{"id":10000012,"name":"VT-12","barcode":"B00012","drivesn":"S16","parser":"tsm","datasize":2356,"scanned":1496,"throughput":3,"status":"running","progress":63}],"replication":[{"name":"VT-12","barcode":"B00012","phase":"index","replicated":100,"transmitted":40,"throughput":2,"remainingtime":120,"progress":40}]}})
-            return self.send({"rc":0,"data":{"scan":[],"replication":[]}})
-        m=re.match(r"/obd/dedupepolicy/runhistory/(\d+)$",p)
-        if m:
-            pid=int(m.group(1)); fromts=int(q.get("fromts",["0"])[0])
-            runs=[] if pid==3 else [{"timestamp":NOW-h*3600,"trigger":"schedule","tapes":2,"dedupedata":1000+h,"uniquedata":100,"deduperatio":"10.0 : 1","dedupeduration":600,"repldata":100,"replunique":20,"repldeduperatio":"5.0 : 1","replduration":60,"status":"failed" if h==1 else "completed"} for h in range(0,72,6)]
-            if pid==4: runs=[{"timestamp":NOW-10*86400,"trigger":"manual","tapes":1,"dedupedata":0,"uniquedata":0,"deduperatio":"N/A","status":"canceled"}]
-            runs=[r for r in runs if r["timestamp"]>=fromts]
-            return self.send({"rc":0,"total":len(runs),"data":runs})
-        if p in EXTRA: return self.send(EXTRA[p])
-        if p=="/obd/tle/tapecaching": return self.send({"rc":1},500)
-        if p=="/obd/dedupepolicy":
-            return self.send({"rc":0,"data":{"policies":[
-              {"name":"Default_Policy","id":1,"status":"idle","suspended":False,"nextrun":0,"lastrun":0,"trigger":"inline","tapes":0},
-              {"name":"Nightly","id":2,"status":"running","suspended":False,"nextrun":1481101200,"lastrun":1481097605,"trigger":"schedule","tapes":3,"replicationmode":"single","targetservers":[{"name":"VTL-B","suspended":False}]},
-              {"name":"Held","id":3,"status":"idle","suspended":True,"nextrun":0,"lastrun":0,"trigger":"schedule","tapes":1},
-              {"name":"Weird","id":4,"status":"degraded","suspended":False,"nextrun":0,"lastrun":0,"trigger":"manual","tapes":1}]}})
-        if p=="/obd/deduplication/reclamation/status":
-            state["recl"]=state.get("recl",0)+1
-            return self.send({"rc":0,"data":{"reclaimstatus":"running" if state["recl"]<=2 else "idle","prunestatus":""}})
-        if p=="/obd/virtualtape":
-            n=int(self.headers.get("Content-Length") or 0); raw=self.rfile.read(n) if n else b""
-            if "application/json" not in (self.headers.get("Content-Type") or "") or json.loads(raw or b"{}").get("location")!="vtl":
-                return self.send({"error":"Unsupported Media Type"},415)
-            o=int(q["offset"][0]); l=int(q["limit"][0])
-            return self.send({"rc":0,"data":{"total":len(TAPES),"tapes":TAPES[o:o+l]}})
-        if p=="/obd/virtuallibrary":
-            return self.send({"rc":0,"data":[{"id":15,"name":"LIB-A","slots":80,"drives":2,"loadeddrives":1,"tapes":15},
-                                             {"id":22,"name":"LIB-B","slots":80,"drives":1,"loadeddrives":1,"tapes":2}]})
-        m=re.match(r"/obd/virtuallibrary/drive/(\d+)$",p)
-        if m:
-            lid=int(m.group(1))
-            drives=[{"id":16,"name":"DRV-16","serialno":"S16","status":"loaded","loadedtape":{"id":10000002,"name":"VT-2","barcode":"000F0001"}},
-                    {"id":17,"name":"DRV-17","serialno":"S17","status":"empty"}] if lid==15 else [{"id":30,"name":"DRV-30","serialno":"S30","status":"empty"}]
-            return self.send({"rc":0,"data":{"vendorid":"ADIC","productid":"Scalar 100","media":"ULTRIUM1","drives":drives}})
-        self.send({"rc":1},404)
-HTTPServer(("127.0.0.1",int(sys.argv[1])),H).serve_forever()
+    python3 tools/test/mock_api.py 18080 [18081 ...] [--expire]
+
+Each port is one cluster with its own data (port order = cluster index), so the dashboards show a varied
+estate. Auth: ApiKey mode sends header apiKey: pw; Password mode logs in with POST
+/irisservices/api/v1/public/accessTokens (user mon, password pw) and sends Authorization: Bearer <token>.
+--expire makes the first Bearer request to /v2/stats/cluster-storage on each cluster return 401 once, to
+exercise the re-login path. Anything but GET (and the login POST) gets 405: the collector must never send it.
+"""
+import json
+import math
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs, unquote
+
+V1 = "/irisservices/api/v1/public"
+TOKEN = "mock-token-abc123"
+GIB = 1024 ** 3
+TIB = 1024 ** 4
+START = time.time()
+
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+PORTS = [int(a) for a in ARGS] or [18080]
+EXPIRE = "--expire" in sys.argv
+LOCK = threading.Lock()
+EXPIRED = set()
+NEW_ALERTS = {}  # cluster index -> list of alerts generated by previous calls
+
+def now_usecs():
+    return int(time.time() * 1e6)
+
+def usecs_ago(hours):
+    return int((time.time() - hours * 3600) * 1e6)
+
+def wave(i, period=900, amp=0.4):
+    # Smooth per-cluster variation so graphs have shape over a few minutes of history.
+    return 1 + amp * math.sin((time.time() - START) / period * 2 * math.pi + i * 1.7)
+
+# ---------------------------------------------------------------------------
+# Static estate per cluster index
+# ---------------------------------------------------------------------------
+CLUSTERS = [
+    {"name": "cohesity-dc1", "version": "7.1.2_u3_release-20250425_c9d1d5a5", "patch": "7.1.2_u3_p2", "nodes": 4,
+     "cap_tib": 380, "used_pct": 0.62, "drr": 6.4},
+    {"name": "cohesity-dc2", "version": "7.1.2_u3_release-20250425_c9d1d5a5", "patch": "7.1.2_u3_p2", "nodes": 4,
+     "cap_tib": 380, "used_pct": 0.48, "drr": 5.9},
+    {"name": "cohesity-branch", "version": "7.1.2_u2_release-20250110_6e6f04b2", "patch": "", "nodes": 3,
+     "cap_tib": 96, "used_pct": 0.83, "drr": 4.2},
+    {"name": "cohesity-dr", "version": "7.1.2_u3_release-20250425_c9d1d5a5", "patch": "7.1.2_u3_p1", "nodes": 4,
+     "cap_tib": 240, "used_pct": 0.71, "drr": 7.1},
+]
+
+# name, environment, policy index, objects, logical TiB, interval hours
+GROUPS = [
+    ("VM-Prod-Gold", "kVMware", 0, 184, 42.0, 4),
+    ("VM-Prod-Silver", "kVMware", 1, 236, 61.5, 12),
+    ("VM-Dev-Test", "kVMware", 2, 312, 38.2, 24),
+    ("SQL-Prod", "kSQL", 0, 48, 12.4, 4),
+    ("Oracle-ERP", "kOracle", 0, 6, 18.9, 12),
+    ("AIX-LPARs", "kPhysical", 1, 22, 9.6, 24),
+    ("Linux-Physical", "kPhysical", 1, 41, 7.3, 24),
+    ("File-Shares-NAS", "kGenericNas", 1, 18, 55.0, 12),
+    ("NetApp-Home", "kNetapp", 1, 12, 31.8, 24),
+    ("M365-Mailboxes", "kO365", 2, 2200, 14.7, 12),
+    ("HyperV-Branch", "kHyperV", 2, 37, 6.1, 24),
+    ("Views-Archive", "kView", 3, 9, 4.4, 24),
+]
+POLICIES = [("Gold-4h-Replicate-Archive", True, "Compliance", 1, 1), ("Silver-Daily-Replicate", True, "", 1, 0),
+            ("Bronze-Daily", False, "", 0, 0), ("Archive-Monthly", False, "Administrative", 0, 1)]
+
+# Per-cluster twists on the group's last run: (group index -> status)
+LAST_STATUS = [
+    {3: "Failed", 6: "SucceededWithWarning", 0: "Running"},
+    {1: "Running", 9: "SucceededWithWarning"},
+    {5: "Failed", 7: "Failed", 2: "Running", 10: "SucceededWithWarning"},
+    {},
+]
+PAUSED = [set(), set(), {11}, {2}]
+SLA_LATE = [{3}, set(), {5, 7}, set()]
+
+def cluster(i):
+    return CLUSTERS[i % len(CLUSTERS)]
+
+def cluster_id(i):
+    return 4100000000000 + i * 1111
+
+def group_id(i, g):
+    return "%d:1690000000000:%d" % (cluster_id(i), 100 + g)
+
+def run_start(i, g, k=0):
+    # Start of the k-th most recent run of group g: aligned to its interval, with a per-group offset.
+    interval = GROUPS[g][5] * 3600
+    offset = (g * 1700 + i * 600) % interval
+    t = time.time() - offset
+    last = t - (t % interval) + offset
+    while last + run_duration(i, g) > time.time():  # the scheduled (finished) runs; Running ones use running_start
+        last -= interval
+    return last - k * interval
+
+def run_duration(i, g):
+    return 900 + (g * 977 + i * 331) % 5400
+
+def running_start(g):
+    # A run in progress: stable start (and so a stable run id) for an hour at a time.
+    t = time.time()
+    return t - (t % 3600) - 1200 - g * 60
+
+def last_status(i, g):
+    return LAST_STATUS[i % len(LAST_STATUS)].get(g, "Succeeded")
+
+# ---------------------------------------------------------------------------
+# Payload builders
+# ---------------------------------------------------------------------------
+def v1_cluster(i):
+    c = cluster(i)
+    cap = c["cap_tib"] * TIB
+    used = cap * c["used_pct"] * (1 + 0.002 * math.sin(time.time() / 3600))
+    w = wave(i)
+    data_in = used * c["drr"]
+    return {
+        "id": cluster_id(i), "name": c["name"], "clusterSoftwareVersion": c["version"], "patchVersion": c["patch"],
+        "clusterType": "kPhysical", "nodeCount": c["nodes"], "encryptionEnabled": True,
+        "isUpgradeAborted": False, "isPatchApplyAborted": False, "currentTimeMsecs": int(time.time() * 1000) + (2500 if i == 2 else 120),
+        "stats": {
+            "dataReductionRatio": c["drr"],
+            "usagePerfStats": {
+                "physicalCapacityBytes": int(cap), "minUsablePhysicalCapacityBytes": int(cap * 0.66),
+                "totalPhysicalUsageBytes": int(used), "systemCapacityBytes": int(cap * 1.02), "systemUsageBytes": int(used * 1.01),
+                "numBytesRead": int(30 * 410e6 * w), "numBytesWritten": int(30 * 690e6 * (2 - w)),
+                "readIos": int(30 * 2400 * w), "writeIos": int(30 * 5100 * (2 - w)),
+                "readLatencyMsecs": round(2.1 * w, 2), "writeLatencyMsecs": round(3.4 * (2 - w), 2),
+            },
+            "dataUsageStats": {
+                "dataInBytes": int(data_in), "dataInBytesAfterDedup": int(data_in / (c["drr"] * 0.7)),
+                "dataWrittenBytes": int(used / 1.3), "localDataWrittenBytes": int(used / 1.35), "cloudDataWrittenBytes": int(used * 0.04),
+                "totalLogicalUsageBytes": int(data_in * 1.1), "storageConsumedBytes": int(used),
+                "localTotalPhysicalUsageBytes": int(used), "cloudTotalPhysicalUsageBytes": int(used * 0.05),
+            },
+        },
+    }
+
+def v1_status(i):
+    c = cluster(i)
+    nodes = []
+    for n in range(c["nodes"]):
+        nodes.append({"id": cluster_id(i) * 10 + n, "ip": "192.0.2.%d" % (10 + i * 10 + n), "inCluster": True,
+                      "inMaintenanceMode": i == 3 and n == 2, "markedForRemoval": False,
+                      "lastUpgradeTimeSecs": int(time.time()) - 86400 * (40 + i), "softwareVersion": c["version"],
+                      "activeOperation": "kNone", "uptime": "%d days" % (40 + i)})
+    return {"clusterId": cluster_id(i), "servicesSynced": i != 2,
+            "stoppedServices": ["kAthena"] if i == 2 else [], "currentOperation": "kNone", "nodeStatuses": nodes}
+
+def v2_storage(i):
+    c = cluster(i)
+    cap = c["cap_tib"] * TIB
+    used = cap * c["used_pct"]
+    return {"totalCapacityBytes": int(cap), "localUsageBytes": int(used), "localAvailableBytes": int(cap - used),
+            "dataProtectionLogicalUsageBytes": int(used * c["drr"] * 0.9), "dataProtectionPhysicalUsageBytes": int(used * 0.9),
+            "fileServicesLogicalUsageBytes": int(used * 0.3), "fileServicesPhysicalUsageBytes": int(used * 0.1)}
+
+def v2_nodes(i):
+    c = cluster(i)
+    per = c["cap_tib"] * TIB / c["nodes"]
+    out = []
+    for n in range(c["nodes"]):
+        out.append({"id": cluster_id(i) * 10 + n, "hostName": "%s-n%d" % (c["name"], n + 1), "ip": "192.0.2.%d" % (10 + i * 10 + n),
+                    "nodeSoftwareVersion": c["version"], "productModel": "C6125" if i != 2 else "C4600",
+                    "hardwareModel": "PowerEdge R760xd2" if i != 2 else "PowerEdge R650", "cohesityNodeSerial": "MOCK%02d%02d" % (i, n),
+                    "nodeType": "StorageNode", "offlineDiskCount": 1 if (i == 1 and n == 3) else 0,
+                    "maxPhysicalCapacityBytes": int(per), "removalState": "DontRemove",
+                    "stats": {"usagePerfStats": {"totalPhysicalUsageBytes": int(per * c["used_pct"] * (0.95 + 0.03 * n))}},
+                    "diskCountByTier": [{"storageTier": "PCIeSSD", "count": 2}, {"storageTier": "SATA-HDD", "count": 12}]})
+    return out
+
+def v2_domains(i):
+    c = cluster(i)
+    used = c["cap_tib"] * TIB * c["used_pct"]
+    out = []
+    for k, (name, share) in enumerate([("DefaultStorageDomain", 0.72), ("LongTerm-Retention", 0.22), ("SmartFiles", 0.06)]):
+        u = used * share
+        out.append({"id": 5 + k, "name": name, "clusterPartitionName": "primary",
+                    "storagePolicy": {"encryptionType": "Strong", "numNodeFailuresTolerated": 1, "numDiskFailuresTolerated": 2},
+                    "physicalQuota": {"hardLimitBytes": int(c["cap_tib"] * TIB * 0.5)} if k == 1 else None,
+                    "stats": {"totalLogicalUsageBytes": int(u * c["drr"] * 1.1), "dataInBytes": int(u * c["drr"]),
+                              "dataInBytesAfterDedup": int(u * 1.6), "dataWrittenBytes": int(u / 1.3),
+                              "localTotalPhysicalUsageBytes": int(u), "cloudTotalPhysicalUsageBytes": 0,
+                              "storageConsumedBytes": int(u), "uniquePhysicalDataBytes": int(u * 0.4), "numFiles": 120000 + k * 4000}})
+    return {"storageDomains": out}
+
+def backup_info(i, g, status, start, end):
+    name, env, pol, objs, tib, _ = GROUPS[g]
+    failed = 3 if status == "Failed" else 0
+    info = {"runType": "kIncremental" if g % 5 else "kFull", "status": status, "startTimeUsecs": int(start * 1e6),
+            "isSlaViolated": g in SLA_LATE[i % len(SLA_LATE)],
+            "successfulObjectsCount": objs - failed, "failedObjectsCount": failed, "skippedObjectsCount": 0, "cancelledObjectsCount": 0,
+            "localSnapshotStats": {"logicalSizeBytes": int(tib * TIB), "bytesRead": int(tib * TIB * 0.03), "bytesWritten": int(tib * TIB * 0.008)}}
+    if end:
+        info["endTimeUsecs"] = int(end * 1e6)
+    return info
+
+def last_run(i, g):
+    status = last_status(i, g)
+    start = run_start(i, g)
+    if status == "Running":
+        start = running_start(g)
+    end = None if status == "Running" else start + run_duration(i, g)
+    run = {"id": "%d:%d" % (100 + g, int(start * 1e6)), "protectionGroupName": GROUPS[g][0],
+           "localBackupInfo": backup_info(i, g, status, start, end)}
+    pol = POLICIES[GROUPS[g][2]]
+    if pol[3] and status != "Running" and i != 3:
+        rstart = end + 60
+        rstatus = "Failed" if (i == 2 and g == 0) else "Succeeded"
+        run["replicationInfo"] = {"replicationTargetResults": [{
+            "clusterName": cluster(3)["name"], "status": rstatus, "startTimeUsecs": int(rstart * 1e6),
+            "endTimeUsecs": int((rstart + 1200) * 1e6), "isSlaViolated": False, "percentageCompleted": 100,
+            "stats": {"logicalBytesTransferred": int(GROUPS[g][4] * TIB * 0.01), "physicalBytesTransferred": int(GROUPS[g][4] * TIB * 0.002)}}]}
+    if pol[4] and status != "Running":
+        astart = end + 300
+        run["archivalInfo"] = {"archivalTargetResults": [{
+            "targetName": "azure-archive-cool", "targetType": "Cloud", "status": "Succeeded", "startTimeUsecs": int(astart * 1e6),
+            "endTimeUsecs": int((astart + 2400) * 1e6), "isSlaViolated": False,
+            "stats": {"logicalBytesTransferred": int(GROUPS[g][4] * TIB * 0.02), "physicalBytesTransferred": int(GROUPS[g][4] * TIB * 0.004),
+                      "avgLogicalTransferRateBps": 180e6}}]}
+    return run
+
+def protection_groups(i):
+    out = []
+    for g, (name, env, pol, objs, _, _) in enumerate(GROUPS):
+        out.append({"id": group_id(i, g), "name": name, "environment": env, "policyId": "%d:1690000000000:%d" % (cluster_id(i), 10 + pol),
+                    "storageDomainId": 6 if pol == 3 else 5, "priority": "kHigh" if pol == 0 else "kMedium",
+                    "isActive": True, "isPaused": g in PAUSED[i % len(PAUSED)], "isDeleted": False,
+                    "numProtectedObjects": objs, "lastRun": last_run(i, g)})
+    return out
+
+def runs_summary(i):
+    out = []
+    for g, (name, env, pol, objs, tib, interval) in enumerate(GROUPS):
+        for k in range(int(24 / interval)):
+            status = last_status(i, g) if k == 0 else ("Failed" if (g + k + i) % 17 == 0 else "Succeeded")
+            start = run_start(i, g, k)
+            if k == 0 and status == "Running":
+                start = running_start(g)
+            if start < time.time() - 86400:
+                continue
+            running = status == "Running"
+            elapsed = time.time() - start
+            done = int(objs * elapsed / (elapsed + 1800 + g * 240)) if running else objs
+            if status == "Failed":
+                done = objs - 3
+            r = {"id": "%d:%d" % (100 + g, int(start * 1e6)), "protectionGroupId": group_id(i, g), "protectionGroupName": name,
+                 "environment": env, "status": status, "isFullRun": g % 5 == 0 and k == 0, "isSlaViolated": k == 0 and g in SLA_LATE[i % len(SLA_LATE)],
+                 "startTimeUsecs": int(start * 1e6), "totalObjectsCount": objs, "successObjectsCount": done,
+                 "logicalSizeBytes": int(tib * TIB), "bytesWritten": int(tib * TIB * 0.008 * (done / objs if objs else 1))}
+            if not running:
+                r["endTimeUsecs"] = int((start + run_duration(i, g)) * 1e6)
+            out.append(r)
+    return {"protectionRunsSummary": out}
+
+def run_progress(i, run_id):
+    for r in runs_summary(i)["protectionRunsSummary"]:
+        if r["id"] == run_id:
+            elapsed = time.time() - r["startTimeUsecs"] / 1e6
+            g = int(run_id.split(":")[0]) - 100
+            total = elapsed + 1800 + g * 240
+            pct = round(elapsed / total * 100, 1)
+            remaining = total - elapsed
+            return {"localRun": {"percentageCompleted": pct, "expectedRemainingTimeUsecs": int(remaining * 1e6)}}
+    return None
+
+def group_runs(i, gid):
+    for g in range(len(GROUPS)):
+        if group_id(i, g) != gid:
+            continue
+        status = last_status(i, g)
+        end = int((run_start(i, g) + run_duration(i, g)) * 1e6)
+        objects = []
+        if status == "Failed":
+            for n, msg in enumerate(["Failed to connect to the SQL Server instance: login timeout expired.",
+                                     "Snapshot creation failed: VSS writer SqlServerWriter is in a failed state.",
+                                     "Host unreachable on port 50051 (agent not responding)."]):
+                objects.append({"object": {"name": "%s-obj%02d" % (GROUPS[g][0].lower(), n + 1), "environment": GROUPS[g][1], "sourceName": "src-%02d.example.test" % n},
+                                "localSnapshotInfo": {"snapshotInfo": {"status": "kFailed", "warnings": [], "endTimeUsecs": end},
+                                                      "failedAttempts": [{"message": msg, "endTimeUsecs": end}]}})
+        if status == "SucceededWithWarning":
+            objects.append({"object": {"name": "%s-obj07" % GROUPS[g][0].lower(), "environment": GROUPS[g][1], "sourceName": "src-07.example.test"},
+                            "localSnapshotInfo": {"snapshotInfo": {"status": "kSuccessful", "endTimeUsecs": end,
+                                                                   "warnings": ["Some files were skipped because they were open or locked."]}}})
+        objects.append({"object": {"name": "%s-obj99" % GROUPS[g][0].lower(), "environment": GROUPS[g][1], "sourceName": "src-99.example.test"},
+                        "localSnapshotInfo": {"snapshotInfo": {"status": "kSuccessful", "endTimeUsecs": end, "warnings": []}}})
+        return {"runs": [{"id": "%d:%d" % (100 + g, int(run_start(i, g) * 1e6)), "objects": objects}]}
+    return {"runs": []}
+
+def recoveries(i):
+    out = []
+    base = time.time()
+    specs = [("Recover_VMs_app01", "RecoverVMs", "kVMware", "Succeeded", 20000), ("Restore_Files_fs02", "RecoverFiles", "kPhysical", "Succeeded", 9000),
+             ("Clone_DB_reporting", "CloneDbs" if i else "RecoverApps", "kSQL", "Running" if i in (0, 2) else "Succeeded", 1200),
+             ("Recover_Mailbox_jsmith", "RecoverMailbox", "kO365", "Failed" if i == 1 else "Succeeded", 30000)]
+    for name, action, env, status, ago in specs:
+        out.append({"id": "%d:%s" % (cluster_id(i), name), "name": name, "recoveryAction": action, "snapshotEnvironment": env,
+                    "status": status, "startTimeUsecs": int((base - ago) * 1e6), "creationInfo": {"userName": "backup-ops"}})
+    return {"recoveries": out}
+
+def base_alerts(i):
+    t = time.time()
+    specs = [
+        ("kCritical", "kBackupRestore", "CE00610004", "ProtectionGroupFailed", "Protection group SQL-Prod failed on 3 objects."),
+        ("kWarning", "kDisk", "CE00200007", "DiskOffline", "Disk on node 4 is offline."),
+        ("kWarning", "kReplication", "CE00700003", "ReplicationSlaViolation", "Replication of VM-Prod-Gold missed its SLA."),
+        ("kInfo", "kCluster", "CE00300011", "SoftwareUpgradeAvailable", "A new software version is available."),
+        ("kWarning", "kArchivalRestore", "CE00800012", "ArchivalTargetSlow", "Archive to azure-archive-cool is running slowly."),
+        ("kCritical", "kCluster", "CE00300020", "ClusterCapacityHigh", "Cluster usage is above 80%."),
+        ("kWarning", "kSecurity", "CE01500004", "AntivirusThreatDetected", "Infected file detected in view Shares."),
+    ]
+    keep = [[0, 2, 3], [1, 3], [0, 4, 5, 6, 3], [3]][i % 4]
+    out = []
+    for n in keep:
+        sev, cat, code, name, desc = specs[n]
+        first = t - 3600 * (2 + n * 3)
+        out.append({"id": "%d:%d" % (cluster_id(i), 1000 + n), "alertCode": code, "alertCategory": cat, "severity": sev, "alertState": "kOpen",
+                    "firstTimestampUsecs": int(first * 1e6), "latestTimestampUsecs": int((t - 600 * (n + 1)) * 1e6), "dedupCount": 1 + n * 2,
+                    "alertDocument": {"alertName": name, "alertDescription": desc, "alertCause": "Mock cause.", "alertHelpText": "Mock help."}})
+    return out
+
+def alerts(i, q):
+    with LOCK:
+        if "startDateUsecs" in q:
+            # One new resolved info/warning alert per call, so the counters move between runs.
+            lst = NEW_ALERTS.setdefault(i, [])
+            n = len(lst)
+            if lst and lst[-1]["firstTimestampUsecs"] > usecs_ago(1 / 30):
+                # At most one new alert per cluster every two minutes, whatever the collector interval.
+                return [a for a in base_alerts(i) + lst if a["firstTimestampUsecs"] >= int(q["startDateUsecs"][0])]
+            sev = "kWarning" if n % 3 == 0 else "kInfo"
+            lst.append({"id": "%d:%d" % (cluster_id(i), 5000 + n), "alertCode": "CE00999%03d" % n, "alertCategory": "kBackupRestore",
+                        "severity": sev, "alertState": "kResolved", "firstTimestampUsecs": now_usecs(), "latestTimestampUsecs": now_usecs(),
+                        "dedupCount": 1, "alertDocument": {"alertName": "RunCompletedWithWarnings", "alertDescription": 'Run of "VM-Dev-Test", completed with warnings %d' % n}})
+            start = int(q["startDateUsecs"][0])
+            return [a for a in base_alerts(i) + lst if a["firstTimestampUsecs"] >= start]
+    return base_alerts(i)
+
+def alert_stats(i):
+    out = {}
+    for b in ("numHardware", "numSoftware", "NumDataService", "NumMaintenance"):
+        for s in ("Critical", "Warning", "Info"):
+            out[b + s + "Alerts"] = 0
+    for a in base_alerts(i):
+        sev = a["severity"][1:]
+        bucket = "numHardware" if a["alertCategory"] in ("kDisk", "kNode") else ("NumDataService" if a["alertCategory"] in ("kBackupRestore", "kReplication", "kArchivalRestore") else "numSoftware")
+        out[bucket + sev + "Alerts"] += 1
+    return out
+
+def last_run_stats(i):
+    failed = sum(1 for g in range(len(GROUPS)) if last_status(i, g) == "Failed")
+    late = len(SLA_LATE[i % len(SLA_LATE)])
+    return {"numRunsMetSla": len(GROUPS) - failed - late, "numRunsFailedSla": late, "numRunsFailed": failed, "numObjectsFailed": failed * 3,
+            "statsByEnv": [{"environment": "kVMware", "numObjectsMetSla": 700, "numObjectsFailedSla": 0, "numObjectsFailed": 0},
+                           {"environment": "kSQL", "numObjectsMetSla": 45, "numObjectsFailedSla": 3 if i == 0 else 0, "numObjectsFailed": 3 if i == 0 else 0},
+                           {"environment": "kPhysical", "numObjectsMetSla": 60, "numObjectsFailedSla": 0, "numObjectsFailed": 3 if i == 2 else 0}]}
+
+def protection_summary(i):
+    envs = [("kVMware", 732, 41, 141.7), ("kSQL", 48, 6, 12.4), ("kOracle", 6, 0, 18.9), ("kPhysical", 63, 9 + i * 3, 16.9),
+            ("kGenericNas", 18, 2, 55.0), ("kNetapp", 12, 0, 31.8), ("kO365", 2200, 140, 14.7), ("kHyperV", 37, 4, 6.1)]
+    stats = [{"envType": e, "protectedCount": p, "unprotectedCount": u, "protectedSizeBytes": int(t * TIB), "unprotectedSizeBytes": int(t * TIB * u / max(p, 1))}
+             for e, p, u, t in envs]
+    return {"numObjectsProtected": sum(s["protectedCount"] for s in stats), "numObjectsUnprotected": sum(s["unprotectedCount"] for s in stats),
+            "protectedSizeBytes": sum(s["protectedSizeBytes"] for s in stats), "unprotectedSizeBytes": sum(s["unprotectedSizeBytes"] for s in stats),
+            "statsByEnv": stats}
+
+def registrations(i):
+    t = int(time.time() * 1000)
+    srcs = [("vcenter-prod.example.test", "kVMware"), ("vcenter-dev.example.test", "kVMware"), ("sql-cluster01.example.test", "kSQL"),
+            ("ora-erp01.example.test", "kOracle"), ("aix-nim01.example.test", "kPhysical"), ("nas01.example.test", "kGenericNas"),
+            ("netapp-cl01.example.test", "kNetapp"), ("tenant.example.test", "kO365"), ("scvmm-branch.example.test", "kHyperV")]
+    out = []
+    for n, (name, env) in enumerate(srcs):
+        status = "Failed" if (i == 2 and n == 4) else "Finished"
+        out.append({"id": n + 1, "name": name, "environment": env,
+                    "sourceInfo": {"authenticationStatus": status, "lastRefreshedTimeMsecs": t - (3600 + n * 900) * 1000 - (86400000 * 3 if status == "Failed" else 0),
+                                   "registrationTimeMsecs": t - 86400000 * (200 + n * 10)}})
+    return {"registrations": out}
+
+def external_targets(i):
+    return {"externalTargets": [
+        {"id": 11, "name": "azure-archive-cool", "purposeType": "Archival", "ownershipContext": "Local", "status": "Registered", "isWormCapable": True},
+        {"id": 12, "name": "s3-longterm", "purposeType": "Archival", "ownershipContext": "Local", "status": "Registered", "isWormCapable": True},
+        {"id": 13, "name": "nas-tier", "purposeType": "Tiering", "ownershipContext": "Local", "status": "Registered" if i != 2 else "Unregistering",
+         "isWormCapable": False, "errorMessage": "" if i != 2 else "Target unreachable"}]}
+
+def vault_stats(i):
+    return {"awsUsageBytes": int((12 + i) * TIB), "azureUsageBytes": int((31 + 2 * i) * TIB), "gcpUsageBytes": 0, "nasUsageBytes": int(4 * TIB),
+            "oracleUsageBytes": 0, "qstarUsageBytes": 0, "s3cUsageBytes": 0,
+            "vaultStatsList": [{"name": "azure-archive-cool", "type": "kAzure", "usageBytes": int((31 + 2 * i) * TIB)},
+                               {"name": "s3-longterm", "type": "kAmazon", "usageBytes": int((12 + i) * TIB)},
+                               {"name": "nas-tier", "type": "kNAS", "usageBytes": int(4 * TIB)}]}
+
+def views_summary(i):
+    return {"totalViews": 24 + i * 3, "protectedViews": 18 + i, "replicatedInViews": 2 if i == 3 else 0, "replicatedOutViews": 4 if i < 2 else 0,
+            "logicalUsageBytes": int(38 * TIB), "storageConsumedBytes": int(14 * TIB), "dataWrittenBytes": int(12 * TIB), "numFiles": 18000000 + i * 250000}
+
+def infected(i):
+    if i != 2:
+        return {"infectedFiles": []}
+    return {"infectedFiles": [{"viewName": "Shares", "filePath": "/dept/finance/invoice.pdf.exe", "state": "Quarantined"},
+                              {"viewName": "Shares", "filePath": "/dept/hr/macro.docm", "state": "Unquarantined"}]}
+
+def policies(i):
+    out = []
+    for n, (name, repl, lock, reps, archs) in enumerate(POLICIES):
+        groups = [g for g in GROUPS if g[2] == n]
+        out.append({"id": "%d:1690000000000:%d" % (cluster_id(i), 10 + n), "name": name, "isReplicated": repl, "dataLock": lock or None,
+                    "numProtectionGroups": len(groups), "numProtectedObjects": sum(g[3] for g in groups),
+                    "remoteTargetPolicy": {"replicationTargets": [{"remoteTargetConfig": {"clusterName": cluster(3)["name"]}}] * reps,
+                                           "archivalTargets": [{"targetName": "azure-archive-cool"}] * archs}})
+    return {"policies": out}
+
+def remote_clusters(i):
+    others = [c for k, c in enumerate(CLUSTERS) if k != i % len(CLUSTERS)][:2]
+    return {"remoteClusters": [{"clusterName": c["name"], "clusterId": cluster_id(CLUSTERS.index(c)), "purpose": ["Replication"],
+                                "effectiveAesEncryptionMode": "AES-256", "tlsEnabled": True} for c in others]}
+
+def consumers(i):
+    out = []
+    for g, (name, env, pol, objs, tib, _) in enumerate(GROUPS):
+        u = tib * TIB / cluster(i)["drr"]
+        out.append({"name": name, "stats": {"dataInBytes": int(tib * TIB * 4), "dataInBytesAfterDedup": int(tib * TIB * 0.6), "dataWrittenBytes": int(u),
+                                            "localTotalPhysicalUsageBytes": int(u * 1.3), "cloudTotalPhysicalUsageBytes": int(u * 0.1 if pol in (0, 3) else 0),
+                                            "storageConsumedBytes": int(u * 1.3)}})
+    return {"statsList": out}
+
+def license_usage(i):
+    exp = int(time.time()) + 86400 * (220 if i != 2 else 21)
+    feats = [("DataProtect", 400 * 1024, 0.78 + 0.05 * i), ("SmartFiles", 100 * 1024, 0.4), ("DataProtect-Cloud", 50 * 1024, 1.06 if i == 2 else 0.6)]
+    return {"licensedUsage": [{"featureName": f, "capacityGib": cap, "expiryTime": exp} for f, cap, _ in feats],
+            "usage": {str(cluster_id(i)): [{"featureName": f, "currentUsageGiB": round(cap * u, 1)} for f, cap, u in feats]},
+            "featureOverUsage": [{"featureName": f, "overusedGib": round(cap * (u - 1), 1)} for f, cap, u in feats if u > 1]}
+
+def applied_patches(i):
+    c = cluster(i)
+    if not c["patch"]:
+        return []
+    return [{"service": svc, "version": c["patch"], "patchLevel": c["patch"].rsplit("_p", 1)[-1], "appliedTimeMsecs": int((time.time() - 86400 * 12) * 1000)}
+            for svc in ("magneto", "iris")]
+
+def available_patches(i):
+    return [{"service": "magneto", "version": "7.1.2_u3_p3", "patchLevel": "3"}] if i in (1, 2) else []
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+def make_handler(i):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def send(self, obj, code=200):
+            b = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def auth(self):
+            if self.headers.get("apiKey") == "pw":
+                return "apikey"
+            if self.headers.get("Authorization") == "Bearer " + TOKEN:
+                return "bearer"
+            return None
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if urlparse(self.path).path != V1 + "/accessTokens":
+                return self.send({"message": "mock: only the access-token login may be POSTed"}, 405)
+            if body.get("username") != "mon" or body.get("password") != "pw" or not body.get("domain"):
+                return self.send({"errorCode": "KStatusUnauthorized", "message": "Invalid username or password."}, 401)
+            return self.send({"accessToken": TOKEN, "tokenType": "Bearer"}, 201)
+
+        def refuse(self):
+            self.send({"message": "mock: %s is not allowed, the collector is read-only" % self.command}, 405)
+
+        do_PUT = do_DELETE = do_PATCH = refuse
+
+        def do_GET(self):
+            u = urlparse(self.path)
+            p, q = u.path, parse_qs(u.query)
+            mode = self.auth()
+            if not mode:
+                return self.send({"message": "Authentication required"}, 401)
+            if EXPIRE and mode == "bearer" and p == "/v2/stats/cluster-storage":
+                with LOCK:
+                    if i not in EXPIRED:
+                        EXPIRED.add(i)
+                        return self.send({"message": "Token expired"}, 401)
+            for bad in ("includeSourceCredentials", "includeEncryptedCredentials"):
+                if bad in q:
+                    return self.send({"message": "mock: %s must never be requested" % bad}, 400)
+
+            if p == "/v2/data-protect/protection-groups":
+                groups = protection_groups(i)
+                if "paginationCookie" in q:
+                    return self.send({"protectionGroups": groups[8:]})
+                return self.send({"protectionGroups": groups[:8], "paginationCookie": "page2"})
+            m = p.split("/")
+            if p.startswith("/v2/data-protect/runs/") and p.endswith("/progress"):
+                r = run_progress(i, unquote(m[4]))
+                return self.send(r) if r else self.send({"message": "run not found"}, 404)
+            if p.startswith("/v2/data-protect/protection-groups/") and p.endswith("/runs"):
+                return self.send(group_runs(i, unquote(m[4])))
+
+            routes = {
+                "/v2/clusters/state": lambda: {"clusterId": cluster_id(i), "status": "Healthy"},
+                V1 + "/cluster": lambda: v1_cluster(i),
+                V1 + "/cluster/status": lambda: v1_status(i),
+                "/v2/stats/cluster-storage": lambda: v2_storage(i),
+                "/v2/clusters/nodes": lambda: v2_nodes(i),
+                "/v2/storage-domains": lambda: v2_domains(i),
+                V1 + "/stats/alerts": lambda: alert_stats(i),
+                V1 + "/alerts": lambda: alerts(i, q),
+                "/v2/data-protect/policies": lambda: policies(i),
+                "/v2/data-protect/runs/summary": lambda: runs_summary(i),
+                V1 + "/stats/protectionRuns/lastRun": lambda: last_run_stats(i),
+                "/v2/data-protect/recoveries": lambda: recoveries(i),
+                V1 + "/stats/protectionSummary": lambda: protection_summary(i),
+                "/v2/data-protect/sources/registrations": lambda: registrations(i),
+                "/v2/data-protect/external-targets": lambda: external_targets(i),
+                V1 + "/stats/vaults": lambda: vault_stats(i),
+                "/v2/file-services/views-summary": lambda: views_summary(i),
+                "/v2/antivirus-service/infected-files": lambda: infected(i),
+                "/v2/remote-clusters": lambda: remote_clusters(i),
+                V1 + "/stats/consumers": lambda: consumers(i),
+                V1 + "/licenseUsage": lambda: license_usage(i),
+                "/v2/patch-management/applied-patches": lambda: applied_patches(i),
+                "/v2/patch-management/available-patches": lambda: available_patches(i),
+            }
+            if p in routes:
+                return self.send(routes[p]())
+            self.send({"message": "mock: no route for " + p}, 404)
+    return H
+
+def main():
+    servers = []
+    for i, port in enumerate(PORTS):
+        s = ThreadingHTTPServer(("127.0.0.1", port), make_handler(i))
+        servers.append(s)
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    print("mock Cohesity API on 127.0.0.1:%s" % ",".join(str(p) for p in PORTS), flush=True)
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+
+if __name__ == "__main__":
+    main()

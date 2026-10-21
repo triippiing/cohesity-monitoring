@@ -1,2 +1,1 @@
-Collector state: event log bookmark and counters (events-<server>.json) and cached results of the hourly checks
-(checkcache-<server>.json). Safe to delete; the next run rebuilds them (the event counters restart from zero).
+Collector state: alert bookmark and counters (alerts-<cluster>.json), first-seen times of running runs (runs-<cluster>.json) and cached results of the 15- and 60-minute checks (checkcache-<cluster>.json). Safe to delete; counters restart from zero.

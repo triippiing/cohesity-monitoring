@@ -1,0 +1,996 @@
+{
+  "title": "Cohesity Patch Management",
+  "uid": "cohesity-patches",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "tags": [
+    "cohesity"
+  ],
+  "description": "Software versions, patches, node hardware and licences across the estate.",
+  "links": [
+    {
+      "title": "Cohesity dashboards",
+      "type": "dashboards",
+      "tags": [
+        "cohesity"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Data source",
+        "current": {
+          "text": "Cohesity Prometheus",
+          "value": "cohesity-prometheus"
+        }
+      },
+      {
+        "name": "cluster",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(cohesity_up, cluster)",
+          "refId": "A"
+        },
+        "definition": "label_values(cohesity_up, cluster)",
+        "includeAll": true,
+        "multi": true,
+        "sort": 1,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "refresh": 2,
+        "label": "Cluster"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "id": 1,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:center;gap:18px;height:48px;box-sizing:border-box;padding:0 18px;border-radius:6px;background:linear-gradient(90deg,#141A26 0%,#1E2738 100%);border-left:4px solid #3D71D9\"><!--logo--><div style=\"min-width:0;color:#8AB8FF;font-size:15px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\"><!--brand-->Cohesity monitoring<!--/brand--> &middot; <!--version-->v1.0.0<!--/version--></div></div>"
+      }
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 2,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 2
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Versions</span></div></div>"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Clusters per version",
+      "id": 3,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count by (version) (cohesity_info{cluster=~\"$cluster\"})",
+          "legendFormat": "{{version}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Clusters per patch",
+      "id": 4,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count by (patch) (label_replace(cohesity_info{cluster=~\"$cluster\"}, \"patch\", \"none\", \"patch\", \"\"))",
+          "legendFormat": "{{patch}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Nodes per model",
+      "id": 5,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "count by (model) (cohesity_node_info{cluster=~\"$cluster\"})",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Clusters",
+      "id": 6,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "max by (cluster, name, version, patch, type, deployment) (cohesity_info{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "max by (cluster) (cohesity_patches_installed{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "max by (cluster) (cohesity_patches_available{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "max by (cluster) (cohesity_cluster_nodes{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "E",
+          "expr": "max by (cluster) (cohesity_cluster_upgrade_aborted{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "F",
+          "expr": "max by (cluster) (cohesity_cluster_patch_apply_aborted{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "G",
+          "expr": "max by (cluster) (cohesity_time_offset_seconds{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "H",
+          "expr": "max by (cluster) (cohesity_cluster_encryption_enabled{cluster=~\"$cluster\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Clock offset"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Encryption"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "green"
+                      },
+                      "0": {
+                        "text": "FAIL",
+                        "color": "red"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cluster"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open instance",
+                    "url": "/d/cohesity-instance/cohesity-instance?var-cluster=${__data.fields.cluster}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "Patches applied",
+              "Value #C": "Patches available",
+              "Value #D": "Nodes",
+              "Value #E": "Upgrade aborted",
+              "Value #F": "Patch aborted",
+              "Value #G": "Clock offset",
+              "Value #H": "Encryption"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "name": 1,
+              "version": 2,
+              "patch": 3,
+              "Value #B": 4,
+              "Value #C": 5,
+              "Value #D": 6,
+              "Value #E": 7,
+              "Value #F": 8,
+              "Value #G": 9,
+              "Value #H": 10,
+              "type": 11,
+              "deployment": 12
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "version",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ],
+      "description": "Version is the cluster software version; patch is the applied service patch level. Patches available counts patches already downloaded to the cluster and ready to apply."
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 7,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Patches and nodes</span></div></div>"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Applied patches",
+      "id": 8,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_patch_info{cluster=~\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Applied"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "Applied"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "service": 1,
+              "version": 2,
+              "level": 3,
+              "Value": 4
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cluster",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Node software and uptime",
+      "id": 9,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_node_status_info{cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_node_last_upgrade_timestamp_seconds{cluster=~\"$cluster\"} * 1000",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last upgrade"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "node_id": true,
+              "operation": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "Value #B": "Last upgrade"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "ip": 1,
+              "version": 2,
+              "uptime": 3,
+              "Value #B": 4
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cluster",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Node hardware",
+      "id": 10,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_node_info{cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true,
+              "node_id": true,
+              "Value": true
+            },
+            "renameByName": {},
+            "indexByName": {
+              "cluster": 0,
+              "node": 1,
+              "ip": 2,
+              "model": 3,
+              "hardware": 4,
+              "serial": 5,
+              "version": 6,
+              "type": 7
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "cluster",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "title": "",
+      "id": 11,
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "transparent": true,
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"display:flex;align-items:flex-end;width:100%;height:100%\"><div style=\"display:flex;align-items:center;gap:10px;width:100%;box-sizing:border-box;height:36px;padding:0 18px;border-radius:999px;background:linear-gradient(90deg,#1E2738 0%,#141A26 100%);border:1px solid #1E2738\"><span style=\"color:#8AB8FF;font-size:12px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">Licences</span></div></div>"
+      }
+    },
+    {
+      "type": "table",
+      "title": "Licence by feature",
+      "id": 12,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "A",
+          "expr": "cohesity_license_entitled_gib{cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "B",
+          "expr": "cohesity_license_used_gib{cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "C",
+          "expr": "100 * cohesity_license_used_gib{cluster=~\"$cluster\"} / cohesity_license_entitled_gib{cluster=~\"$cluster\"}",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "refId": "D",
+          "expr": "(cohesity_license_expiry_timestamp_seconds{cluster=~\"$cluster\"} - time()) / 86400",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Days to expiry"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "d"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Used %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "orange",
+                      "value": 80
+                    },
+                    {
+                      "color": "red",
+                      "value": 90
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "exclude": {
+              "pattern": "^(__name__|Time)$"
+            }
+          }
+        },
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "__name__": true,
+              "instance": true,
+              "job": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Entitled GiB",
+              "Value #B": "Used GiB",
+              "Value #C": "Used %",
+              "Value #D": "Days to expiry"
+            },
+            "indexByName": {
+              "cluster": 0,
+              "feature": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Days to expiry",
+                "desc": false
+              }
+            ]
+          }
+        }
+      ],
+      "description": "From v1 licenseUsage. Over 100% means the feature uses more than its entitlement."
+    }
+  ]
+}

@@ -3,28 +3,30 @@
     "Scheme": "https",
     "Port": 0,
     "SkipCertificateCheck": false,
-    "TimeoutSec": 30,
+    "TimeoutSec": 60,
+    "AuthMode": "ApiKey",
+    "Domain": "LOCAL",
     "OutputDirectory": "reports",
     "RetentionDays": 30,
     "TextfileDirectory": "metrics",
     "StateDirectory": "state",
-    "CollectEventLog": true,
-    "EventLogDirectory": "events",
-    "EventLogRetentionDays": 90,
+    "CollectAlerts": true,
+    "AlertLogDirectory": "events",
+    "AlertLogRetentionDays": 90,
     "DisabledChecks": []
   },
   "Servers": [
     {
       "Name": "COHESITY-01",
       "Host": "cohesity-01.example.com",
-      "ServerAddress": "",
+      "AuthMode": "ApiKey",
       "CredentialFile": "creds\\cohesity-01.xml"
     },
     {
       "Name": "COHESITY-02",
       "Host": "192.0.2.12",
-      "Scheme": "https",
-      "Port": 0,
+      "AuthMode": "Password",
+      "Domain": "LOCAL",
       "SkipCertificateCheck": false,
       "CredentialFile": "creds\\cohesity-02.xml"
     }

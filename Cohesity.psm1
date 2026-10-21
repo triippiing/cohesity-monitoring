@@ -1,8 +1,11 @@
-# Cohesity.psm1 - shared helpers for the FalconStor Cohesity REST API (/obd).
+# Cohesity.psm1 - shared helpers for the Cohesity DataProtect REST API (v2 at /v2, v1 at /irisservices/api/v1).
 # Compatible with Windows PowerShell 5.1 and PowerShell 7.x.
 #
+# Read-only by construction: Invoke-CohesityApi only sends GET. The one POST in this module is the
+# access-token login (POST /irisservices/api/v1/public/accessTokens), which changes nothing on the cluster.
+#
 # Exit code convention used by the scripts that import this module:
-#   0 = OK / idle, 1 = informational (work active, tapes loaded),
+#   0 = OK / idle, 1 = informational (runs active, recoveries running),
 #   2 = attention or API error, 3 = usage / configuration error.
 
 Set-StrictMode -Version Latest
@@ -13,11 +16,10 @@ Set-StrictMode -Version Latest
 
 function New-CohesityError {
     # Category: Usage | Config | Auth | Connection | Api
-    param([Parameter(Mandatory)][string]$Message, [string]$Category = 'Api', [int]$HttpStatus = 0, $Rc = $null)
+    param([Parameter(Mandatory)][string]$Message, [string]$Category = 'Api', [int]$HttpStatus = 0)
     $ex = New-Object System.Exception $Message
     $ex.Data['CohesityCategory'] = $Category
     $ex.Data['HttpStatus'] = $HttpStatus
-    $ex.Data['Rc'] = $Rc
     return $ex
 }
 
@@ -34,6 +36,21 @@ function Get-HttpStatusFromError {
     $responseProperty = $ErrorRecord.Exception.PSObject.Properties['Response']
     if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) { return 0 }
     try { return [int]$responseProperty.Value.StatusCode } catch { return 0 }
+}
+
+function Get-CohesityErrorText {
+    # Cohesity answers errors with {"errorCode": "...", "message": "..."}; fall back to the exception text.
+    param($ErrorRecord)
+    $detail = $ErrorRecord.ErrorDetails
+    if ($null -ne $detail -and $detail.Message) {
+        try {
+            $json = $detail.Message | ConvertFrom-Json
+            $message = $json.PSObject.Properties['message']
+            if ($null -ne $message -and $message.Value) { return [string]$message.Value }
+        } catch { }
+        return ([string]$detail.Message).Trim()
+    }
+    return $ErrorRecord.Exception.Message
 }
 
 # ---------------------------------------------------------------------------
@@ -58,7 +75,7 @@ function Get-OptionalValue {
 function Import-CohesityConfig {
     <#
     .SYNOPSIS
-    Loads the estate configuration (appliances, transport, output) from JSON.
+    Loads the estate configuration (clusters, transport, output) from JSON.
     Relative paths in the file are resolved against the config file's directory.
     #>
     param([Parameter(Mandatory)][string]$Path)
@@ -96,44 +113,48 @@ function Import-CohesityConfig {
         [pscustomobject]@{
             Name                 = [string]$name
             Host                 = [string]$hostName
-            # Login body 'server' field must be the appliance IP; defaults to Host (resolved if it is a DNS name).
-            ServerAddress        = [string](Get-OptionalValue $s 'ServerAddress' '')
+            # ApiKey: the credential's password is a Cohesity API key, sent in the apiKey header.
+            # Password: the credential is a user name and password, exchanged for an access token.
+            AuthMode             = [string](Get-OptionalValue $s 'AuthMode' (Get-OptionalValue $defaults 'AuthMode' 'ApiKey'))
+            # Login domain for Password mode: LOCAL for a local user, or the Active Directory domain.
+            Domain               = [string](Get-OptionalValue $s 'Domain' (Get-OptionalValue $defaults 'Domain' 'LOCAL'))
             Scheme               = [string](Get-OptionalValue $s 'Scheme' (Get-OptionalValue $defaults 'Scheme' 'https'))
             Port                 = [int](Get-OptionalValue $s 'Port' (Get-OptionalValue $defaults 'Port' 0))
             SkipCertificateCheck = [bool](Get-OptionalValue $s 'SkipCertificateCheck' (Get-OptionalValue $defaults 'SkipCertificateCheck' $false))
-            TimeoutSec           = [int](Get-OptionalValue $s 'TimeoutSec' (Get-OptionalValue $defaults 'TimeoutSec' 30))
+            TimeoutSec           = [int](Get-OptionalValue $s 'TimeoutSec' (Get-OptionalValue $defaults 'TimeoutSec' 60))
             CredentialFile       = $credFile
         }
     }
 
     foreach ($r in $resolved) {
         if ($r.Scheme -notin @('http', 'https')) { throw (New-CohesityError "Server $($r.Name): Scheme must be http or https." 'Config') }
+        if ($r.AuthMode -notin @('ApiKey', 'Password')) { throw (New-CohesityError "Server $($r.Name): AuthMode must be ApiKey or Password." 'Config') }
     }
 
-    # Collector state (event log bookmark, cached slow checks) and the raw event log archive.
+    # Collector state (alert bookmark, run first-seen times, cached slow checks) and the raw alert archive.
     $stateDir = Get-OptionalValue $defaults 'StateDirectory' 'state'
     if (-not [System.IO.Path]::IsPathRooted($stateDir)) { $stateDir = Join-Path $configDir $stateDir }
-    $eventDir = Get-OptionalValue $defaults 'EventLogDirectory' 'events'
-    if (-not [System.IO.Path]::IsPathRooted($eventDir)) { $eventDir = Join-Path $configDir $eventDir }
+    $alertDir = Get-OptionalValue $defaults 'AlertLogDirectory' 'events'
+    if (-not [System.IO.Path]::IsPathRooted($alertDir)) { $alertDir = Join-Path $configDir $alertDir }
 
     [pscustomobject]@{
-        Path            = $Path
-        OutputDirectory = $outputDir
+        Path              = $Path
+        OutputDirectory   = $outputDir
         TextfileDirectory = $textfileDir
-        StateDirectory  = $stateDir
-        EventLogDirectory = $eventDir
-        CollectEventLog = [bool](Get-OptionalValue $defaults 'CollectEventLog' $true)
-        EventLogRetentionDays = [int](Get-OptionalValue $defaults 'EventLogRetentionDays' 90)
-        DisabledChecks  = @(Get-OptionalValue $defaults 'DisabledChecks' @())
-        RetentionDays   = [int](Get-OptionalValue $defaults 'RetentionDays' 30)
-        Servers         = @($resolved)
+        StateDirectory    = $stateDir
+        AlertLogDirectory = $alertDir
+        CollectAlerts     = [bool](Get-OptionalValue $defaults 'CollectAlerts' $true)
+        AlertLogRetentionDays = [int](Get-OptionalValue $defaults 'AlertLogRetentionDays' 90)
+        DisabledChecks    = @(Get-OptionalValue $defaults 'DisabledChecks' @())
+        RetentionDays     = [int](Get-OptionalValue $defaults 'RetentionDays' 30)
+        Servers           = @($resolved)
     }
 }
 
 function Select-CohesityServer {
     <#
     .SYNOPSIS
-    Picks servers by -Server names, -All, or (interactive only) a numbered menu.
+    Picks clusters by -Server names, -All, or (interactive only) a numbered menu.
     #>
     param(
         [Parameter(Mandatory)]$Config,
@@ -159,23 +180,23 @@ function Select-CohesityServer {
     if ($NonInteractive) { throw (New-CohesityError 'Specify -Server <name[,name]> or -All when running with -NonInteractive.' 'Usage') }
 
     Write-Host ''
-    Write-Host 'Available Cohesity servers' -ForegroundColor White
+    Write-Host 'Available Cohesity clusters' -ForegroundColor White
     for ($i = 0; $i -lt $servers.Count; $i++) {
         Write-Host ("{0}. {1} [{2}]" -f ($i + 1), $servers[$i].Name, $servers[$i].Host)
     }
-    Write-Host 'A. All servers'
+    Write-Host 'A. All clusters'
 
-    $selection = Read-Host 'Select servers (for example: 1,2 or A)'
-    if ([string]::IsNullOrWhiteSpace($selection)) { throw (New-CohesityError 'No server selection was entered.' 'Usage') }
+    $selection = Read-Host 'Select clusters (for example: 1,2 or A)'
+    if ([string]::IsNullOrWhiteSpace($selection)) { throw (New-CohesityError 'No cluster selection was entered.' 'Usage') }
     if ($selection.Trim() -match '^(?i:a|all)$') { return $servers }
 
     $indexes = foreach ($entry in ($selection -split ',')) {
         $number = 0
         if (-not [int]::TryParse($entry.Trim(), [ref]$number)) {
-            throw (New-CohesityError "Invalid selection '$entry'. Enter A or comma-separated server numbers, for example 1,2." 'Usage')
+            throw (New-CohesityError "Invalid selection '$entry'. Enter A or comma-separated cluster numbers, for example 1,2." 'Usage')
         }
         if ($number -lt 1 -or $number -gt $servers.Count) {
-            throw (New-CohesityError "Server number $number is outside the valid range 1-$($servers.Count)." 'Usage')
+            throw (New-CohesityError "Cluster number $number is outside the valid range 1-$($servers.Count)." 'Usage')
         }
         $number - 1
     }
@@ -185,16 +206,18 @@ function Select-CohesityServer {
 function New-CohesityCredentialFile {
     <#
     .SYNOPSIS
-    Saves an API credential with Export-Clixml. On Windows the password is DPAPI-encrypted and
-    can only be read back by the same user account on the same machine, so create it as the
-    account that runs the scheduled task.
+    Saves an API credential with Export-Clixml. On Windows the secret is DPAPI-encrypted and can only be
+    read back by the same user account on the same machine, so create it as the account that runs the
+    scheduled task. For AuthMode ApiKey enter any user name (e.g. apikey) and the API key as the password;
+    for AuthMode Password enter the Cohesity user name and password.
     .EXAMPLE
     Import-Module .\Cohesity.psm1; New-CohesityCredentialFile -Path .\creds\cohesity-01.xml
     #>
     param([Parameter(Mandatory)][string]$Path, [string]$UserName)
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $cred = if ($UserName) { Get-Credential -UserName $UserName -Message 'Cohesity API credential' } else { Get-Credential -Message 'Cohesity API credential' }
+    $message = 'Cohesity API credential (ApiKey mode: any user name, the API key as the password)'
+    $cred = if ($UserName) { Get-Credential -UserName $UserName -Message $message } else { Get-Credential -Message $message }
     if ($null -eq $cred) { throw (New-CohesityError 'No credential entered.' 'Usage') }
     $cred | Export-Clixml -LiteralPath $Path
     Write-Host "Saved credential for $($cred.UserName) to $Path"
@@ -231,7 +254,7 @@ function Get-CohesityCredential {
     if ($NonInteractive) {
         throw (New-CohesityError "No CredentialFile configured for $($ServerConfig.Name) and -NonInteractive was given." 'Config')
     }
-    $prompted = Get-Credential -Message ("Enter API credentials for {0} [{1}]" -f $ServerConfig.Name, $ServerConfig.Host)
+    $prompted = Get-Credential -Message ("Enter API credentials for {0} [{1}] (AuthMode {2})" -f $ServerConfig.Name, $ServerConfig.Host, $ServerConfig.AuthMode)
     if ($null -eq $prompted) { throw (New-CohesityError "No credentials supplied for $($ServerConfig.Name)." 'Usage') }
     return $prompted
 }
@@ -241,6 +264,7 @@ function Get-CohesityCredential {
 # ---------------------------------------------------------------------------
 
 $script:IsCore = $PSVersionTable.PSEdition -eq 'Core'
+$script:V1 = '/irisservices/api/v1/public'
 
 function Enable-LegacyCertificateBypass {
     # Windows PowerShell 5.1 only: Invoke-RestMethod has no -SkipCertificateCheck there.
@@ -260,75 +284,32 @@ public class CohesityTrustAllCertsPolicy : ICertificatePolicy {
 }
 
 if (-not $script:IsCore) {
-    # Windows PowerShell 5.1 defaults to TLS 1.0/1.1 on older .NET builds.
+    # Windows PowerShell 5.1 defaults to TLS 1.0/1.1 on older .NET builds; Cohesity clusters require TLS 1.2.
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
 }
 
-function Resolve-CohesityServerAddress {
-    param([Parameter(Mandatory)]$ServerConfig)
-    if ($ServerConfig.ServerAddress) { return $ServerConfig.ServerAddress }
-    $ip = $null
-    if ([System.Net.IPAddress]::TryParse($ServerConfig.Host, [ref]$ip)) { return $ServerConfig.Host }
-    try {
-        $addresses = [System.Net.Dns]::GetHostAddresses($ServerConfig.Host) | Where-Object { $_.AddressFamily -eq 'InterNetwork' }
-        if ($addresses) { return @($addresses)[0].IPAddressToString }
-    } catch { }
-    throw (New-CohesityError "Cannot resolve $($ServerConfig.Host) to an IPv4 address; set ServerAddress in the config." 'Connection')
-}
-
-function Invoke-CohesityCurlGet {
-    # GET with a JSON body. Some endpoints (e.g. /virtualtape) take their filter as a GET body and answer
-    # HTTP 415 without one. Windows PowerShell 5.1 (.NET Framework) cannot send a body on GET, so this uses
-    # curl.exe, which ships with Windows 10 1803+ / Server 2019+. The body and response go through temp files.
-    param([Parameter(Mandatory)]$Connection, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Body)
-    $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $curl) { $curl = Get-Command curl -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
-    if (-not $curl) { throw (New-CohesityError "GET $Path needs a request body, which Windows PowerShell 5.1 cannot send and curl.exe was not found. Run the script with PowerShell 7 (pwsh.exe) instead." 'Api') }
-
-    $uri = $Connection.BaseUri + $Path
-    $cookie = $Connection.WebSession.Cookies.GetCookies([uri]$uri)['session_id']
-    $bodyFile = [System.IO.Path]::GetTempFileName(); $outFile = [System.IO.Path]::GetTempFileName(); $errFile = [System.IO.Path]::GetTempFileName()
-    try {
-        [System.IO.File]::WriteAllText($bodyFile, $Body, (New-Object System.Text.UTF8Encoding($false)))
-        $arguments = @('-s', '-S', '-X', 'GET', '--max-time', [string]([Math]::Max(60, $Connection.Server.TimeoutSec)),
-            '-H', 'Content-Type: application/json', '-H', 'Accept: application/json',
-            '--data-binary', "@$bodyFile", '-o', $outFile, '--stderr', $errFile, '-w', '%{http_code}')
-        if ($cookie) { $arguments += @('-b', ('session_id=' + $cookie.Value)) }
-        if ($Connection.Server.SkipCertificateCheck) { $arguments += '-k' }
-        $arguments += $uri
-        # stderr goes to a file: in Windows PowerShell 5.1, redirected native stderr becomes a terminating error under Stop.
-        $code = (& $curl.Source @arguments | Out-String).Trim()
-        $status = 0
-        if (-not [int]::TryParse(($code -split "`n")[-1].Trim(), [ref]$status) -or $status -eq 0) {
-            throw (New-CohesityError ("GET $Path failed (curl exit $LASTEXITCODE): " + [System.IO.File]::ReadAllText($errFile).Trim()) 'Connection')
-        }
-        $text = [System.IO.File]::ReadAllText($outFile, [System.Text.Encoding]::UTF8)
-        if ($status -ge 400) {
-            $category = if ($status -eq 401 -or $status -eq 403) { 'Auth' } else { 'Api' }
-            throw (New-CohesityError "GET $Path failed (HTTP $status): $text" $category $status)
-        }
-        return ($text | ConvertFrom-Json)
-    } finally {
-        Remove-Item -LiteralPath $bodyFile, $outFile, $errFile -Force -ErrorAction SilentlyContinue
-    }
+function Get-CohesityAuthHeader {
+    param([Parameter(Mandatory)]$Connection)
+    if ($Connection.Server.AuthMode -eq 'ApiKey') { return @{ apiKey = $Connection.Credential.GetNetworkCredential().Password } }
+    if ($Connection.Token) { return @{ Authorization = ('Bearer ' + $Connection.Token) } }
+    return @{}
 }
 
 function Invoke-CohesityHttp {
-    # Single HTTP call with consistent error classification. No retry or rc checks here.
+    # Single HTTP call with consistent error classification. No retry here.
     param(
         [Parameter(Mandatory)]$Connection,
-        [Parameter(Mandatory)][string]$Method,
+        [Parameter(Mandatory)][ValidateSet('Get', 'Post')][string]$Method,
         [Parameter(Mandatory)][string]$Path,
-        [string]$Body
+        [string]$Body,
+        [switch]$NoAuth
     )
-    if ($Method -eq 'Get' -and $PSBoundParameters.ContainsKey('Body') -and (-not $script:IsCore -or $env:COHESITY_FORCE_CURL)) {
-        return Invoke-CohesityCurlGet -Connection $Connection -Path $Path -Body $Body
-    }
+    $headers = @{ Accept = 'application/json' }
+    if (-not $NoAuth) { foreach ($h in (Get-CohesityAuthHeader $Connection).GetEnumerator()) { $headers[$h.Key] = $h.Value } }
     $params = @{
         Method      = $Method
         Uri         = $Connection.BaseUri + $Path
-        WebSession  = $Connection.WebSession
-        Headers     = @{ Accept = 'application/json' }
+        Headers     = $headers
         TimeoutSec  = $Connection.Server.TimeoutSec
         ErrorAction = 'Stop'
     }
@@ -345,7 +326,8 @@ function Invoke-CohesityHttp {
         $category = 'Api'
         if ($status -eq 401 -or $status -eq 403) { $category = 'Auth' }
         elseif ($status -eq 0) { $category = 'Connection' }   # DNS, refused, TLS, timeout
-        throw (New-CohesityError ("{0} {1} failed{2}: {3}" -f $Method, $Path, $(if ($status) { " (HTTP $status)" } else { '' }), $_.Exception.Message) $category $status)
+        $text = Get-CohesityErrorText $_
+        throw (New-CohesityError ("{0} {1} failed{2}: {3}" -f $Method.ToUpperInvariant(), $Path, $(if ($status) { " (HTTP $status)" } else { '' }), $text) $category $status)
     }
 }
 
@@ -353,20 +335,15 @@ function Test-TransientError {
     param($Exception)
     $category = Get-CohesityErrorCategory $Exception
     $status = [int]$Exception.Data['HttpStatus']
-    return ($category -eq 'Connection' -or $status -in @(408, 500, 502, 503, 504))
-}
-
-function Assert-CohesityRc {
-    param($Response, [string]$What)
-    if ($null -eq $Response) { throw (New-CohesityError "$What returned an empty response." 'Api') }
-    $rcProperty = $Response.PSObject.Properties['rc']
-    if ($null -eq $rcProperty) { throw (New-CohesityError "$What response has no rc field." 'Api') }
-    if ([int]$rcProperty.Value -ne 0) {
-        throw (New-CohesityError "$What returned rc=$($rcProperty.Value). Look up with GET /obd/server/rcs/$($rcProperty.Value)." 'Api' 0 $rcProperty.Value)
-    }
+    return ($category -eq 'Connection' -or $status -in @(408, 429, 500, 502, 503, 504))
 }
 
 function Connect-Cohesity {
+    <#
+    .SYNOPSIS
+    Opens a connection: ApiKey mode needs no login; Password mode exchanges the credential for an access
+    token. Either way one authenticated GET proves the credential works before any check runs.
+    #>
     param(
         [Parameter(Mandatory)]$ServerConfig,
         [Parameter(Mandatory)][PSCredential]$Credential
@@ -374,34 +351,38 @@ function Connect-Cohesity {
 
     if ($ServerConfig.SkipCertificateCheck) { Enable-LegacyCertificateBypass }
 
-    $baseUri = if ($ServerConfig.Port -gt 0) { "{0}://{1}:{2}/obd" -f $ServerConfig.Scheme, $ServerConfig.Host, $ServerConfig.Port }
-               else { "{0}://{1}/obd" -f $ServerConfig.Scheme, $ServerConfig.Host }
+    $baseUri = if ($ServerConfig.Port -gt 0) { "{0}://{1}:{2}" -f $ServerConfig.Scheme, $ServerConfig.Host, $ServerConfig.Port }
+               else { "{0}://{1}" -f $ServerConfig.Scheme, $ServerConfig.Host }
 
     $connection = [pscustomobject]@{
         Server     = $ServerConfig
         BaseUri    = $baseUri
-        WebSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
         Credential = $Credential
-        Address    = Resolve-CohesityServerAddress $ServerConfig
+        Token      = $null
     }
-    Open-CohesitySession $connection
+    if ($ServerConfig.AuthMode -eq 'Password') { Open-CohesitySession $connection }
+    Invoke-CohesityApi -Connection $connection -Path '/v2/clusters/state' | Out-Null
     return $connection
 }
 
 function Open-CohesitySession {
     param([Parameter(Mandatory)]$Connection)
 
-    $Connection.WebSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+    $userName = $Connection.Credential.UserName
+    $domain = $Connection.Server.Domain
+    # DOMAIN\user and user@domain override the configured Domain.
+    if ($userName -match '^([^\\]+)\\(.+)$') { $domain = $Matches[1]; $userName = $Matches[2] }
+    elseif ($userName -match '^([^@]+)@(.+)$') { $userName = $Matches[1]; $domain = $Matches[2] }
     $body = @{
-        username = $Connection.Credential.UserName
+        domain   = $domain
+        username = $userName
         password = $Connection.Credential.GetNetworkCredential().Password
-        server   = $Connection.Address
     } | ConvertTo-Json -Compress
 
     $response = $null
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         try {
-            $response = Invoke-CohesityHttp -Connection $Connection -Method Post -Path '/auth/login' -Body $body
+            $response = Invoke-CohesityHttp -Connection $Connection -Method Post -Path "$script:V1/accessTokens" -Body $body -NoAuth
             break
         } catch {
             if ($attempt -eq 2 -or -not (Test-TransientError $_.Exception)) { throw }
@@ -409,52 +390,32 @@ function Open-CohesitySession {
         }
     }
 
-    # Never echo the login response: it carries the session id.
-    if ($null -eq $response -or $null -eq $response.PSObject.Properties['rc']) {
-        throw (New-CohesityError 'Login response did not contain an rc field.' 'Auth')
+    # Never echo the login response: it carries the token.
+    $tokenProperty = if ($null -ne $response) { $response.PSObject.Properties['accessToken'] } else { $null }
+    if ($null -eq $tokenProperty -or [string]::IsNullOrWhiteSpace([string]$tokenProperty.Value)) {
+        throw (New-CohesityError "Login for $userName returned no access token." 'Auth')
     }
-    if ([int]$response.rc -ne 0) {
-        throw (New-CohesityError "Cohesity rejected the login for $($Connection.Credential.UserName) (rc=$($response.rc))." 'Auth' 0 $response.rc)
-    }
-    $idProperty = $response.PSObject.Properties['id']
-    if ($null -eq $idProperty) { $idProperty = $response.PSObject.Properties['session_id'] }
-    if ($null -eq $idProperty -or [string]::IsNullOrWhiteSpace([string]$idProperty.Value)) {
-        throw (New-CohesityError 'Login returned rc=0 but no session id.' 'Auth')
-    }
-
-    # Some PowerShell/appliance combinations do not retain Set-Cookie automatically.
-    $uri = [uri]$Connection.BaseUri
-    if ($null -eq $Connection.WebSession.Cookies.GetCookies($uri)['session_id']) {
-        $Connection.WebSession.Cookies.Add((New-Object System.Net.Cookie('session_id', [string]$idProperty.Value, '/', $uri.Host)))
-    }
+    $Connection.Token = [string]$tokenProperty.Value
 }
 
 function Invoke-CohesityApi {
     <#
     .SYNOPSIS
-    API call with rc checking, one retry on transient failures, and one re-login on 401
-    (sessions expire after ~10 minutes idle). Path is relative to /obd, e.g. '/dedupepolicy'.
+    GET with one retry on transient failures and, in Password mode, one re-login on 401 (tokens expire).
+    Path is the full path from the cluster root, e.g. '/v2/stats/cluster-storage' or
+    '/irisservices/api/v1/public/alerts'. There is deliberately no Method parameter: this package only reads.
     #>
     param(
         [Parameter(Mandatory)]$Connection,
-        [Parameter(Mandatory)][string]$Path,
-        [ValidateSet('Get', 'Post', 'Put', 'Delete')][string]$Method = 'Get',
-        $Body
+        [Parameter(Mandatory)][string]$Path
     )
-    $call = @{ Connection = $Connection; Method = $Method; Path = $Path }
-    if ($PSBoundParameters.ContainsKey('Body')) {
-        $call.Body = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 10 -Compress }
-    }
-
     $reloggedIn = $false
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         try {
-            $response = Invoke-CohesityHttp @call
-            Assert-CohesityRc -Response $response -What "$Method $Path"
-            return $response
+            return Invoke-CohesityHttp -Connection $Connection -Method Get -Path $Path
         } catch {
             $ex = $_.Exception
-            if ((Get-CohesityErrorCategory $ex) -eq 'Auth' -and [int]$ex.Data['HttpStatus'] -eq 401 -and -not $reloggedIn) {
+            if ($Connection.Server.AuthMode -eq 'Password' -and [int]$ex.Data['HttpStatus'] -eq 401 -and -not $reloggedIn) {
                 $reloggedIn = $true
                 Open-CohesitySession $Connection
                 continue
@@ -465,111 +426,40 @@ function Invoke-CohesityApi {
     }
 }
 
-function Invoke-CohesityDownload {
-    <#
-    .SYNOPSIS
-    Calls an endpoint that returns a file rather than JSON (e.g. PUT /server/event with Accept: application/csv)
-    and returns the body as text. Handles gzip-compressed bodies and ISO-8859-1 content. Re-logs in once on 401.
-    #>
-    param(
-        [Parameter(Mandatory)]$Connection,
-        [Parameter(Mandatory)][string]$Path,
-        [ValidateSet('Get', 'Post', 'Put')][string]$Method = 'Get',
-        $Body,
-        [string]$Accept = 'application/csv'
-    )
-    $params = @{
-        Method          = $Method
-        Uri             = $Connection.BaseUri + $Path
-        WebSession      = $Connection.WebSession
-        Headers         = @{ Accept = $Accept }
-        TimeoutSec      = [Math]::Max(120, $Connection.Server.TimeoutSec)
-        UseBasicParsing = $true
-        ErrorAction     = 'Stop'
-    }
-    if ($PSBoundParameters.ContainsKey('Body')) {
-        $params.ContentType = 'application/json'
-        $params.Body = if ($Body -is [string]) { $Body } else { $Body | ConvertTo-Json -Depth 10 -Compress }
-    }
-    if ($script:IsCore -and $Connection.Server.SkipCertificateCheck) { $params.SkipCertificateCheck = $true }
-
-    for ($attempt = 1; $attempt -le 2; $attempt++) {
-        try {
-            $params.WebSession = $Connection.WebSession
-            $response = Invoke-WebRequest @params
-            break
-        } catch {
-            $status = Get-HttpStatusFromError $_
-            if ($status -eq 401 -and $attempt -eq 1) { Open-CohesitySession $Connection; continue }
-            $category = if ($status -eq 401 -or $status -eq 403) { 'Auth' } elseif ($status -eq 0) { 'Connection' } else { 'Api' }
-            throw (New-CohesityError ("{0} {1} failed{2}: {3}" -f $Method, $Path, $(if ($status) { " (HTTP $status)" } else { '' }), $_.Exception.Message) $category $status)
-        }
-    }
-
-    $content = $response.Content
-    if ($content -is [string]) {
-        $bytes = $null
-        $text = $content
-    } else {
-        $bytes = [byte[]]$content
-        $text = $null
-    }
-    if ($null -eq $text) {
-        if ($bytes.Length -ge 2 -and $bytes[0] -eq 0x1F -and $bytes[1] -eq 0x8B) {
-            $in = New-Object System.IO.MemoryStream(, $bytes)
-            $gz = New-Object System.IO.Compression.GZipStream($in, [System.IO.Compression.CompressionMode]::Decompress)
-            $out = New-Object System.IO.MemoryStream
-            $gz.CopyTo($out); $gz.Dispose()
-            $bytes = $out.ToArray()
-        }
-        $text = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($bytes)
-    }
-    # A JSON body here means the API returned an rc error instead of the file.
-    if ($text -match '^\s*\{\s*"rc"') {
-        $json = $text | ConvertFrom-Json
-        Assert-CohesityRc -Response $json -What "$Method $Path"
-    }
-    return $text
-}
-
 function Get-CohesityPagedCollection {
     <#
     .SYNOPSIS
-    Reads an offset/limit endpoint until 'total' items are collected, e.g.
-    Get-CohesityPagedCollection -Connection $c -Path '/virtualtape' -CollectionName 'tapes'
+    Reads a v2 cookie-paged endpoint until no paginationCookie comes back, e.g.
+    Get-CohesityPagedCollection -Connection $c -Path '/v2/data-protect/protection-groups' -CollectionName 'protectionGroups'
     #>
     param(
         [Parameter(Mandatory)]$Connection,
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$CollectionName,
         [int]$PageSize = 1000,
-        $Body
+        [string]$CountParameter = 'maxResultCount',
+        [string]$CookieParameter = 'paginationCookie',
+        [int]$MaxPages = 50
     )
     $items = [System.Collections.Generic.List[object]]::new()
-    $offset = 0
     $separator = if ($Path.Contains('?')) { '&' } else { '?' }
-    while ($true) {
-        $call = @{ Connection = $Connection; Path = ("{0}{1}offset={2}&limit={3}" -f $Path, $separator, $offset, $PageSize) }
-        if ($null -ne $Body) { $call.Body = $Body }
-        $response = Invoke-CohesityApi @call
-        $data = Get-OptionalValue $response 'data' $null
-        $page = @(Get-OptionalValue $data $CollectionName @())
-        foreach ($item in $page) { $items.Add($item) }
-        $total = [int](Get-OptionalValue $data 'total' 0)
-        $offset += $PageSize
-        if ($page.Count -eq 0 -or $page.Count -lt $PageSize -or ($total -gt 0 -and $items.Count -ge $total)) { break }
+    $cookie = $null
+    for ($page = 0; $page -lt $MaxPages; $page++) {
+        $uri = '{0}{1}{2}={3}' -f $Path, $separator, $CountParameter, $PageSize
+        if ($cookie) { $uri += '&{0}={1}' -f $CookieParameter, [uri]::EscapeDataString($cookie) }
+        $response = Invoke-CohesityApi -Connection $Connection -Path $uri
+        foreach ($item in @(Get-OptionalValue $response $CollectionName @())) { $items.Add($item) }
+        $cookie = [string](Get-OptionalValue $response $CookieParameter '')
+        if (-not $cookie) { break }
     }
     return $items.ToArray()
 }
 
 function Disconnect-Cohesity {
+    # Access tokens simply expire; nothing to call. Drop the token so the object cannot be reused by mistake.
     param($Connection)
     if ($null -eq $Connection) { return }
-    try {
-        Invoke-CohesityHttp -Connection $Connection -Method Post -Path '/auth/logout' -Body '{}' | Out-Null
-    } catch {
-        Write-Verbose "Logout warning for $($Connection.BaseUri): $($_.Exception.Message)"
-    }
+    $Connection.Token = $null
 }
 
 # ---------------------------------------------------------------------------
@@ -581,10 +471,11 @@ function Get-CohesityTimestamp {
     return (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
-function ConvertFrom-CohesityEpoch {
-    param($Epoch)
-    if ($null -eq $Epoch -or [long]$Epoch -le 0) { return '' }
-    return [DateTimeOffset]::FromUnixTimeSeconds([long]$Epoch).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
+function ConvertFrom-CohesityUsecs {
+    # Cohesity times are microseconds since the epoch (*Usecs); returns ISO-8601 UTC or ''.
+    param($Usecs)
+    if ($null -eq $Usecs -or [double]$Usecs -le 0) { return '' }
+    return [DateTimeOffset]::FromUnixTimeMilliseconds([long]([double]$Usecs / 1000)).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Get-CohesityReportPath {
@@ -612,7 +503,7 @@ Export-ModuleMember -Function @(
     'New-CohesityError', 'Get-CohesityErrorCategory',
     'Get-CohesityDefaultConfigPath', 'Import-CohesityConfig', 'Select-CohesityServer',
     'New-CohesityCredentialFile', 'Get-CohesityCredential',
-    'Connect-Cohesity', 'Disconnect-Cohesity', 'Invoke-CohesityApi', 'Invoke-CohesityDownload', 'Get-CohesityPagedCollection',
-    'Get-CohesityTimestamp', 'ConvertFrom-CohesityEpoch', 'Get-CohesityReportPath', 'Remove-CohesityOldReport',
+    'Connect-Cohesity', 'Disconnect-Cohesity', 'Invoke-CohesityApi', 'Get-CohesityPagedCollection',
+    'Get-CohesityTimestamp', 'ConvertFrom-CohesityUsecs', 'Get-CohesityReportPath', 'Remove-CohesityOldReport',
     'Write-CohesityUsageError', 'Get-OptionalValue'
 )

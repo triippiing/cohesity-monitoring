@@ -1,18 +1,25 @@
 <#
 .SYNOPSIS
-Reports Cohesity deduplication policy, reclamation/prune and (optionally) virtual tape state.
+Reports Cohesity protection runs, recoveries and cluster operations in progress, and anything needing attention.
 
 .DESCRIPTION
-Appliances, transport and credential files come from Cohesity.config.json (or -ConfigPath /
+Clusters, transport and credential files come from Cohesity.config.json (or -ConfigPath /
 $env:COHESITY_CONFIG). Interactive by default; for Task Scheduler use -All (or -Server) with
 -NonInteractive and a CredentialFile per server (see New-CohesityCredentialFile in Cohesity.psm1).
+
+Read-only: GETs only (plus the access-token login in AuthMode Password).
+
+Rows: every backup run in progress, every backup run in the last -Hours that failed or missed its SLA, the
+replication and archive state of each group's last run when it is not a success, recoveries in progress or
+failed, and a cluster operation (upgrade, node add/remove) or stopped services. -IncludeAllRuns adds the
+successful runs too.
 
 Exit codes: 0 idle, 1 work active or queued, 2 attention / unknown state / API error, 3 usage or config error.
 
 .EXAMPLE
 .\Get-CohesityActivity.ps1
 .EXAMPLE
-.\Get-CohesityActivity.ps1 -All -NonInteractive -IncludeTapeInventory
+.\Get-CohesityActivity.ps1 -All -NonInteractive -Hours 12
 #>
 [CmdletBinding()]
 param(
@@ -21,7 +28,8 @@ param(
     [switch]$All,
     [PSCredential]$Credential,
     [switch]$NonInteractive,
-    [switch]$IncludeTapeInventory,
+    [ValidateRange(1, 168)][int]$Hours = 24,
+    [switch]$IncludeAllRuns,
     [string]$CsvPath,
 
     # Optional overrides of the config file transport settings.
@@ -67,22 +75,28 @@ try {
 }
 
 # ---------------------------------------------------------------------------
-# Status classification, pinned to the values documented in the REST API guide.
+# Status classification, pinned to the v2 run status enum (Accepted, Running, Canceled, Canceling, Failed,
+# Missed, Succeeded, SucceededWithWarning, OnHold, Finalizing, Skipped, Paused) and the v1 k-prefixed forms.
 # Anything not listed is 'Unknown' and is treated as needing attention.
 # ---------------------------------------------------------------------------
 function Get-StatusCategory {
     param([AllowNull()][AllowEmptyString()][string]$Status)
     if ([string]::IsNullOrWhiteSpace($Status)) { return 'Unknown' }
     $s = $Status.Trim().ToLowerInvariant()
-    # Compound replication states (cascade/parallel), e.g. completedfailed, pendingfailed.
-    if ($s -match 'failed') { return 'Attention' }
+    if ($s -cmatch '^k[a-z]') { $s = $s.Substring(1) }
     switch -Regex ($s) {
-        '^(running|syncing|inprogress|active|started|processing|preparing|stopping|deduplicating)$' { return 'Active' }
-        '^(queued|pending|waiting|waitingfortapedrive|hold|resume|completedpending|pendingcompleted)$' { return 'Queued' }
-        '^(error|cancelled|stopped|suspended|outofsync|offline|incomplete)$' { return 'Attention' }
-        '^(completed|idle|insync|online|none|disabled|pure|plain|mixed)$' { return 'Inactive' }
+        '^(running|finalizing|canceling|inprogress|active)$' { return 'Active' }
+        '^(accepted|onhold|paused|queued|scheduled|pending)$' { return 'Queued' }
+        '^(failed|missed|canceled|cancelled|failure|error)$' { return 'Attention' }
+        '^(succeeded|success|successful|succeededwithwarning|warning|skipped|none|finished)$' { return 'Inactive' }
     }
     return 'Unknown'
+}
+
+function Format-Usecs {
+    param($Value)
+    if ($null -eq $Value -or [double]$Value -le 0) { return '' }
+    return ConvertFrom-CohesityUsecs $Value
 }
 
 $runTimestamp = Get-CohesityTimestamp
@@ -130,69 +144,79 @@ foreach ($s in $selectedServers) {
     }
 
     try {
-        # Deduplication policies: data.policies[]
+        $sinceUsecs = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$Hours * 3600000) * 1000
+
+        # Cluster operation and stopped services (v1 cluster/status).
         try {
-            $response = Invoke-CohesityApi -Connection $connection -Path '/dedupepolicy'
-            $policies = @(Get-OptionalValue (Get-OptionalValue $response 'data' $null) 'policies' @())
-            if ($policies.Count -eq 0) {
-                Add-Result $s $true 'Dedupe policies' '' '' 'No policies defined' 'Inactive'
-            }
-            foreach ($p in $policies) {
-                $status = [string](Get-OptionalValue $p 'status' '')
-                $category = Get-StatusCategory $status
-                # A suspended policy only matters if it has tapes assigned (e.g. an unused Default_Policy on a replica target does not).
-                if ((Get-OptionalValue $p 'suspended' $false) -eq $true -and [int](Get-OptionalValue $p 'tapes' 0) -gt 0) { $category = 'Attention' }
-                $detail = 'trigger={0}; tapes={1}; lastrun={2}; nextrun={3}; suspended={4}' -f `
-                    (Get-OptionalValue $p 'trigger' ''), (Get-OptionalValue $p 'tapes' ''),
-                    (ConvertFrom-CohesityEpoch (Get-OptionalValue $p 'lastrun' 0)),
-                    (ConvertFrom-CohesityEpoch (Get-OptionalValue $p 'nextrun' 0)),
-                    (Get-OptionalValue $p 'suspended' $false)
-                Add-Result $s $true 'Dedupe policies' ([string](Get-OptionalValue $p 'name' "Policy $(Get-OptionalValue $p 'id' '?')")) 'status' $status $category $detail
+            $status = Invoke-CohesityApi -Connection $connection -Path '/irisservices/api/v1/public/cluster/status'
+            $op = [string](Get-OptionalValue $status 'currentOperation' 'kNone')
+            if ($op -and $op -ne 'kNone') { Add-Result $s $true 'Cluster' 'Cluster operation' 'currentOperation' $op 'Active' }
+            foreach ($svc in @(Get-OptionalValue $status 'stoppedServices' @())) {
+                Add-Result $s $true 'Cluster' ([string]$svc) 'service' 'stopped' 'Attention'
             }
         } catch {
-            Add-EndpointError $s 'Dedupe policies' $_
+            Add-EndpointError $s 'Cluster' $_
         }
 
-        # Reclamation and index prune: data.reclaimstatus / data.prunestatus (idle|running|failed).
-        # Both are empty strings on a standby node or a server without a Deduplication Repository.
+        # Backup runs started in the window (v2 runs summary).
         try {
-            $response = Invoke-CohesityApi -Connection $connection -Path '/deduplication/reclamation/status'
-            $data = Get-OptionalValue $response 'data' $null
-            foreach ($field in @('reclaimstatus', 'prunestatus')) {
-                $value = [string](Get-OptionalValue $data $field '')
-                if ([string]::IsNullOrWhiteSpace($value)) {
-                    Add-Result $s $true 'Reclamation' 'Deduplication Repository' $field '' 'Inactive' 'Not applicable (standby node or no repository)'
-                } else {
-                    Add-Result $s $true 'Reclamation' 'Deduplication Repository' $field $value (Get-StatusCategory $value)
+            $response = Invoke-CohesityApi -Connection $connection -Path ('/v2/data-protect/runs/summary?startTimeUsecs={0}' -f $sinceUsecs)
+            $runs = @(Get-OptionalValue $response 'protectionRunsSummary' @())
+            foreach ($r in ($runs | Sort-Object { [double](Get-OptionalValue $_ 'startTimeUsecs' 0) })) {
+                $value = [string](Get-OptionalValue $r 'status' '')
+                $category = Get-StatusCategory $value
+                if ($category -eq 'Inactive' -and (Get-OptionalValue $r 'isSlaViolated' $false) -eq $true) { $category = 'Attention'; $value += ' (SLA missed)' }
+                if ($category -eq 'Inactive' -and -not $IncludeAllRuns) { continue }
+                $detail = 'env={0}; start={1}; end={2}; objects={3}/{4}; written={5}; run={6}' -f `
+                    (Get-OptionalValue $r 'environment' ''), (Format-Usecs (Get-OptionalValue $r 'startTimeUsecs' $null)),
+                    (Format-Usecs (Get-OptionalValue $r 'endTimeUsecs' $null)), (Get-OptionalValue $r 'successObjectsCount' ''),
+                    (Get-OptionalValue $r 'totalObjectsCount' ''), (Get-OptionalValue $r 'bytesWritten' ''), (Get-OptionalValue $r 'id' '')
+                Add-Result $s $true 'Backup runs' ([string](Get-OptionalValue $r 'protectionGroupName' '')) 'status' $value $category $detail
+            }
+            if ($runs.Count -eq 0) { Add-Result $s $true 'Backup runs' '' '' "No runs in the last $Hours hour(s)" 'Inactive' }
+        } catch {
+            Add-EndpointError $s 'Backup runs' $_
+        }
+
+        # Replication and archive state of each group's last run (only the ones that are not a plain success).
+        try {
+            $groups = @(Get-CohesityPagedCollection -Connection $connection -CollectionName 'protectionGroups' `
+                -Path '/v2/data-protect/protection-groups?isDeleted=false&includeLastRunInfo=true&pruneSourceIds=true&pruneExcludedSourceIds=true')
+            foreach ($g in $groups) {
+                $name = [string](Get-OptionalValue $g 'name' '')
+                if ((Get-OptionalValue $g 'isPaused' $false) -eq $true) { Add-Result $s $true 'Protection groups' $name 'isPaused' 'paused' 'Queued' 'No new runs are scheduled while the group is paused.' }
+                $run = Get-OptionalValue $g 'lastRun' $null
+                if ($null -eq $run) { continue }
+                $tasks = @()
+                foreach ($t in @(Get-OptionalValue (Get-OptionalValue $run 'replicationInfo' $null) 'replicationTargetResults' @())) { $tasks += , @('Replication', (Get-OptionalValue $t 'clusterName' ''), $t) }
+                foreach ($t in @(Get-OptionalValue (Get-OptionalValue $run 'archivalInfo' $null) 'archivalTargetResults' @())) { $tasks += , @('Archive', (Get-OptionalValue $t 'targetName' ''), $t) }
+                foreach ($task in $tasks) {
+                    $value = [string](Get-OptionalValue $task[2] 'status' '')
+                    $category = Get-StatusCategory $value
+                    if ($category -eq 'Inactive' -and (Get-OptionalValue $task[2] 'isSlaViolated' $false) -eq $true) { $category = 'Attention'; $value += ' (SLA missed)' }
+                    if ($category -eq 'Inactive' -and -not $IncludeAllRuns) { continue }
+                    $detail = 'target={0}; start={1}; end={2}; percent={3}' -f $task[1], (Format-Usecs (Get-OptionalValue $task[2] 'startTimeUsecs' $null)),
+                        (Format-Usecs (Get-OptionalValue $task[2] 'endTimeUsecs' $null)), (Get-OptionalValue $task[2] 'percentageCompleted' '')
+                    Add-Result $s $true $task[0] $name 'status' $value $category $detail
                 }
             }
         } catch {
-            Add-EndpointError $s 'Reclamation' $_
+            Add-EndpointError $s 'Protection groups' $_
         }
 
-        # Virtual tape inventory (paged). Only non-idle tape states are written as rows,
-        # plus one summary row, to keep the CSV readable on large estates.
-        if ($IncludeTapeInventory) {
-            try {
-                $tapes = @(Get-CohesityPagedCollection -Connection $connection -Path '/virtualtape' -CollectionName 'tapes' -Body @{ location = 'vtl' })
-                $counts = @{ Active = 0; Queued = 0; Attention = 0; Unknown = 0 }
-                foreach ($t in $tapes) {
-                    $label = '{0} [{1}]' -f (Get-OptionalValue $t 'name' ''), (Get-OptionalValue $t 'barcode' '')
-                    foreach ($field in @('devicestatus', 'dedupestatus', 'replstatus')) {
-                        $value = [string](Get-OptionalValue $t $field '')
-                        # Empty dedupe/repl status = not configured for this tape.
-                        if ([string]::IsNullOrWhiteSpace($value) -and $field -ne 'devicestatus') { continue }
-                        $category = Get-StatusCategory $value
-                        if ($category -eq 'Inactive') { continue }
-                        $counts[$category]++
-                        Add-Result $s $true 'Virtual tapes' $label $field $value $category ('usedmb={0}; sizemb={1}' -f (Get-OptionalValue $t 'usedmb' ''), (Get-OptionalValue $t 'sizemb' ''))
-                    }
-                }
-                Add-Result $s $true 'Virtual tapes' 'Summary' 'count' ([string]$tapes.Count) 'Inactive' `
-                    ('tapes={0}; active={1}; queued={2}; attention={3}; unknown={4}' -f $tapes.Count, $counts.Active, $counts.Queued, $counts.Attention, $counts.Unknown)
-            } catch {
-                Add-EndpointError $s 'Virtual tapes' $_
+        # Recoveries in the window (v2).
+        try {
+            $response = Invoke-CohesityApi -Connection $connection -Path ('/v2/data-protect/recoveries?startTimeUsecs={0}' -f $sinceUsecs)
+            foreach ($r in @(Get-OptionalValue $response 'recoveries' @())) {
+                $value = [string](Get-OptionalValue $r 'status' '')
+                $category = Get-StatusCategory $value
+                if ($category -eq 'Inactive' -and -not $IncludeAllRuns) { continue }
+                $detail = 'action={0}; env={1}; start={2}; user={3}' -f (Get-OptionalValue $r 'recoveryAction' ''), (Get-OptionalValue $r 'snapshotEnvironment' ''),
+                    (Format-Usecs (Get-OptionalValue $r 'startTimeUsecs' $null)), (Get-OptionalValue (Get-OptionalValue $r 'creationInfo' $null) 'userName' '')
+                Add-Result $s $true 'Recoveries' ([string](Get-OptionalValue $r 'name' '')) 'status' $value $category $detail
             }
+        } catch {
+            Add-EndpointError $s 'Recoveries' $_
         }
     } finally {
         Disconnect-Cohesity $connection

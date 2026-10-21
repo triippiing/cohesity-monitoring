@@ -1,43 +1,39 @@
 # Cohesity Monitoring
 
-A self-contained package that monitors FalconStor Cohesity (VTL and deduplication) appliances using a PowerShell collector, windows_exporter, Prometheus and Grafana, all on one Windows host. The same stack also runs on one Linux host, with node_exporter in place of windows_exporter (see [Install on a Linux machine](#install-on-a-linux-machine)). It talks to the appliances' REST API only; nothing is installed on them. Not affiliated with FalconStor. Every Cohesity API call it makes is read-only: GETs, plus login/logout, plus one `PUT /server/event` that only downloads the event log as CSV and changes nothing.
+A self-contained package that monitors Cohesity DataProtect clusters using a PowerShell collector, windows_exporter, Prometheus and Grafana, all on one Windows host. The same stack also runs on one Linux host, with node_exporter in place of windows_exporter (see [Install on a Linux machine](#install-on-a-linux-machine)). It talks to the clusters' REST API only (v2 at `/v2`, v1 at `/irisservices/api/v1/public`); nothing is installed on them. Not affiliated with Cohesity. Every Cohesity API call it makes is read-only: GETs, plus, in `AuthMode` `Password`, the access-token login (`POST /irisservices/api/v1/public/accessTokens`), which changes nothing on the cluster. `Cohesity.psm1` has no way to send any other method.
 
 ```
 Cohesity API --(Export-CohesityMetrics.ps1, every 5 min)--> metrics\cohesity.prom  (metrics/cohesity.prom on Linux)
    --> windows_exporter (Linux: node_exporter) :9182 --> Prometheus 127.0.0.1:9090 --> Grafana :3000 (dashboard + alerts)
 ```
 
+It is the same layout, installers, control scripts, theme and dashboard style as the StorSafe monitoring package, so the two can run side by side (see [Running next to StorSafe monitoring](#running-next-to-storsafe-monitoring)).
+
 ## Screenshots
 
-Rendered from the test kit's mock API (`tools\test`), so the appliance names are template names. Each dashboard links to the others from its top bar.
+Rendered from the test kit's mock API (`tools\test`), four made-up clusters with the template names `COHESITY-01` to `COHESITY-04`, with Business Text installed and the default theme. Each dashboard links to the others from its top bar.
 
-**Fleet**: one row per appliance with API state, failed checks, failover, pool usage, device faults, dedupe and replication at a glance.
+**Fleet**: estate health cards, then one row per cluster with API state, failed checks, storage used, data reduction, failing groups, SLA misses, failed runs, open alerts, hardware faults and versions.
 
-![Cohesity Fleet dashboard](docs/images/grafana-fleet-1080p.png)
+![Cohesity Fleet dashboard](docs/images/grafana-fleet.png)
 
-**Activity**: running dedupe, replication, reclamation and prune jobs across the estate, with throughput and queue trends.
+**Activity**: backup runs in progress (progress, objects, data written, remaining time), runs per group over the last 24 hours, the last replication and archive of every group, and recoveries.
 
 ![Cohesity Activity dashboard](docs/images/grafana-activity.png)
 
-**Instance**: one appliance (server picker, one URL per appliance): health, capacity, LUNs and repository devices, deduplication, replication and the collector itself.
+**Instance**: one cluster (cluster picker, one URL per cluster): health, capacity and storage domains, performance, protection groups and failed objects, nodes, sources, archive targets, remote clusters, licence, alerts and the collector itself.
 
 ![Cohesity Instance dashboard](docs/images/grafana-instance.png)
 
-**Events**: event-log counts by severity, per-hour trends and the newest warnings, errors and criticals per appliance.
+**Alerts**: open alerts by severity, new alerts per hour, the newest open critical and warning alerts per cluster, and counts by category.
 
-![Cohesity Events dashboard](docs/images/grafana-events.png)
+![Cohesity Alerts dashboard](docs/images/grafana-alerts.png)
 
-**Patch Management**: versions, builds, OS and installed patches across the estate.
+**Patch Management**: software versions and patch levels, applied and available patches, node software, hardware and uptime, and licences.
 
 ![Cohesity Patch Management dashboard](docs/images/grafana-patches.png)
 
-**Prometheus and the exporter**: the collector writes `metrics\cohesity.prom`, windows_exporter serves it on port 9182, and Prometheus scrapes it as job `cohesity`. These two pages are the first place to look when a dashboard is empty.
-
-![Prometheus targets page](docs/images/prometheus-targets.png)
-
-![windows_exporter metrics page](docs/images/exporter-metrics.png)
-
-More: the [full-height Fleet page](docs/images/grafana-fleet.png), the [Grafana dashboard folder](docs/images/grafana-folder.png) and the [Prometheus graph page](docs/images/prometheus-graph.png).
+The first screen of Fleet as a 1080p monitor shows it: [grafana-fleet-1080p.png](docs/images/grafana-fleet-1080p.png).
 
 ## Layout
 
@@ -45,37 +41,47 @@ More: the [full-height Fleet page](docs/images/grafana-fleet.png), the [Grafana 
 |---|---|
 | `VERSION`, `CHANGELOG.md` | Package version and what changed between versions |
 | `Install-CohesityMonitoring.ps1` | One-shot installer (idempotent, safe to re-run) |
-| `Get-CohesityInstallers.ps1` | Downloads the three third-party installers into `installers\` |
+| `Get-CohesityInstallers.ps1` | Downloads the third-party installers into `installers\` |
 | `CohesityMonitoringControl.ps1` | Status / Stop / Start / Pause / Resume of the whole stack, for maintenance |
+| `Publish-CohesityDashboards.ps1` | Writes the dashboards Grafana loads, in the site theme (`monitoring\theme.json`) |
 | `linux\install.sh` | One-shot Linux installer (idempotent, safe to re-run; `--help` lists its options) |
 | `linux\get-installers.sh` | Downloads the four third-party tarballs into `installers\` (`--print-urls` for a host with no internet access) |
 | `linux\cohesity-control.sh` | status / stop / start / pause / resume of the whole stack on Linux, for maintenance |
 | `linux\systemd\` | Unit and timer templates that `install.sh` renders into `/etc/systemd/system` |
 | `linux\lib.sh` | Functions shared by the Linux scripts (not run by itself) |
-| `Cohesity.psm1` | Shared API client |
-| `Cohesity.config.json` | Appliances and settings. **Edit the Servers list before installing.** |
+| `Cohesity.psm1` | Shared API client (read-only by construction) |
+| `Cohesity.config.json` | Clusters and settings. **Edit the Servers list before installing.** |
 | `Export-CohesityMetrics.ps1` | Metrics collector (run by the scheduled task) |
-| `Get-CohesityActivity.ps1`, `Get-CohesityLoadedTapes.ps1` | Ad-hoc CSV/console reports |
-| `metrics\` | windows_exporter or node_exporter textfile directory (`cohesity.prom`, plus `cohesity-<server>.prom` per appliance in parallel mode) |
+| `Get-CohesityActivity.ps1`, `Get-CohesityFailedObjects.ps1` | Ad-hoc CSV/console reports |
+| `metrics\` | windows_exporter or node_exporter textfile directory (`cohesity.prom`, plus `cohesity-<cluster>.prom` per cluster in parallel mode) |
 | `reports\` | CSV output of the Get-* scripts (30-day retention) |
 | `creds\` | Credential files (created by the installer): DPAPI-protected on Windows, Export-Clixml files in a mode 0700 folder on Linux |
 | `installers\` | Put the third-party installers here (see `installers\README.txt`) |
-| `state\` | Collector state: event log bookmark/counters and cached hourly checks (safe to delete) |
-| `events\` | Raw event log, one CSV per appliance per day (90-day retention) |
+| `state\` | Collector state: alert bookmark and counters, first-seen times of running runs, cached slower checks (safe to delete) |
+| `events\` | Raw alert archive, one CSV per cluster per day (90-day retention) |
 | `prometheus\` | Created at install: Prometheus binaries, config and data |
 | `grafana\`, `node_exporter\` | Created at install on Linux: the extracted Grafana (with its data) and node_exporter |
-| `monitoring\` | prometheus.yml, Grafana provisioning, dashboard JSON, task registration script |
+| `monitoring\` | prometheus.yml, Grafana provisioning, dashboard JSON, theme example, task registration script |
 
 Paths are written with backslashes, as on Windows; on Linux they are the same names with `/`.
+
+## The Cohesity account
+
+Give the collector its own local Cohesity user with the built-in **Viewer** role (read-only), on every cluster. Two ways to authenticate, per cluster (`AuthMode` in the config):
+
+- **`ApiKey`** (default, recommended): create an API key for that user (Settings > Access Management > API Keys, or the user's own profile in Helios-managed clusters). The collector sends it in the `apiKey` header; there is no login and no session. When the credential prompt appears, enter any user name (e.g. `apikey`) and the API key as the password.
+- **`Password`**: the collector logs in with the user name and password (`POST .../accessTokens`, domain `LOCAL` unless `Domain` is set or the user name is `DOMAIN\user` or `user@domain`) and uses the bearer token; it logs in again once if the token expires mid-run. Use this when API keys are not allowed; an Active Directory account works if it has the Viewer role.
+
+The Viewer role sees everything the dashboards need. It cannot change anything, so even a mistake in the package could not alter a cluster. Multi-tenant clusters: the collector asks for `includeTenants=true` where the API offers it, so a cluster-level Viewer sees every organisation's groups.
 
 ## Install on a new Windows machine
 
 What you need:
 
-- Windows 10/11 or Windows Server 2016 or later, 64-bit, with Windows PowerShell 5.1 (built in). About 2 GB of disk for the stack plus Prometheus data (roughly 50 MB per appliance per month at the default 180-day retention).
+- Windows 10/11 or Windows Server 2016 or later, 64-bit, with Windows PowerShell 5.1 (built in). About 2 GB of disk for the stack plus Prometheus data (roughly 50 MB per cluster per month at the default 180-day retention).
 - A local Administrator account for the install, and the account the collector will run as (it can be the same one; the installer asks for its password so the scheduled task runs while logged off).
-- Network access from this machine to every appliance on the API port (https 443 by default) and, for the installer download step only, to github.com and grafana.com (or the four installer files copied in by hand).
-- For each appliance, an API account. A read-only (type R) account is recommended.
+- Network access from this machine to every cluster on the API port (https 443 by default) and, for the installer download step only, to github.com and grafana.com (or the four installer files copied in by hand).
+- For each cluster, an API account. Use a Viewer-role user with an API key; see [The Cohesity account](#the-cohesity-account).
 
 Steps, from an elevated cmd prompt (right-click Command Prompt > Run as administrator), logged on as the account that will run the collector:
 
@@ -85,29 +91,29 @@ Steps, from an elevated cmd prompt (right-click Command Prompt > Run as administ
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CohesityMonitoring\Get-CohesityInstallers.ps1
    ```
    (add `-Proxy http://proxy:port` if the machine needs one; with no internet access, download the four URLs it prints on another machine and copy the files in). The fourth file is Grafana's Business Text panel plugin, which draws the card sections (rounded value blocks on a navy panel); without it each section shows a row of Grafana stat panels instead.
-3. Copy `Cohesity.config.example.json` to `Cohesity.config.json` (the installer does this for you if the file is missing, then stops so you can edit it) and fill in the `Servers` list: a name, IP or hostname, and credential file name per appliance. Under `Defaults`, check `Scheme` and `SkipCertificateCheck` (true for self-signed appliance certificates). The example shows every setting; the real file is ignored by git.
+3. Copy `Cohesity.config.example.json` to `Cohesity.config.json` (the installer does this for you if the file is missing, then stops so you can edit it) and fill in the `Servers` list: a name, IP or hostname, and credential file name per cluster. Under `Defaults`, check `Scheme` and `SkipCertificateCheck` (true for self-signed cluster certificates). The example shows every setting; the real file is ignored by git.
 4. Run the installer:
    ```
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CohesityMonitoring\Install-CohesityMonitoring.ps1
    ```
-   It prompts for each appliance's API account, then for the collector account's Windows password. It then installs windows_exporter, Prometheus (as a startup task), Grafana (with the data source and dashboards provisioned) and the collector task, runs the collector once, and prints a summary table. Every step is idempotent: if a step reports a missing installer, add the file and re-run.
+   It prompts for each cluster's API account, then for the collector account's Windows password. It then installs windows_exporter, Prometheus (as a startup task), Grafana (with the data source and dashboards provisioned) and the collector task, runs the collector once, and prints a summary table. Every step is idempotent: if a step reports a missing installer, add the file and re-run.
 5. Check it:
    ```
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CohesityMonitoring\CohesityMonitoringControl.ps1 Status
    ```
    All four components should show Running/Ready and answering. Then open http://localhost:3000 (first login admin/admin, you are asked to change it) and go to **Dashboards > Cohesity**:
 
-- **Cohesity Fleet**: one row per appliance (API up, failed checks, pool used, offline devices, queues, events, replica age), red rows at the top. Click a server name to open its Instance page.
-- **Cohesity Activity**: live job tables across the estate: dedupe jobs (server, policy, barcode, state, drive, progress, first seen), replication jobs (source, target, phase, progress), reclamation/prune runs in progress, latest policy run per appliance, import/export.
-- **Cohesity Instance**: everything for one appliance, chosen from the Server picker (health, capacity, deduplication, replication, tapes, events, platform, collector). Each appliance has its own URL: `/d/cohesity-instance?var-server=NAME`.
-- **Cohesity Patch Management**: product version, build and patch level, installed patches and patch coverage, RHEL release, kernel, make/model, memory, clock offset.
-- **Cohesity Events**: warnings, errors and criticals across the estate, with counts over time and a filterable table.
+- **Cohesity Fleet**: estate cards, then one row per cluster (API up, failed checks, storage used, data reduction, failing groups, SLA misses, failed runs, open alerts, node and disk faults, version), red rows at the top. Click a cluster name to open its Instance page.
+- **Cohesity Activity**: backup runs in progress (group, environment, progress, objects, written, remaining, start), runs per group in the last 24 hours, the last replication and archive of every group, and recoveries.
+- **Cohesity Instance**: everything for one cluster, chosen from the Cluster picker (health, capacity and storage domains, performance, protection groups and failed objects, nodes, sources, targets, licence, alerts, collector). Each cluster has its own URL: `/d/cohesity-instance?var-cluster=NAME`.
+- **Cohesity Patch Management**: software version and patch level per cluster, applied and available patches, node software, uptime and hardware, licences.
+- **Cohesity Alerts**: open critical, warning and info alerts across the estate, new alerts over time and a filterable table of the newest ones.
 
 The dashboards are file-provisioned from `monitoring\dashboards-live\`, which `Publish-CohesityDashboards.ps1` writes from the package's `monitoring\dashboards\` (the installer runs it). Deleting a JSON file from `monitoring\dashboards\` and re-running the publish script removes that dashboard from Grafana.
 
 ### Theme and branding
 
-Every dashboard opens with a banner (logo, brand line and the installed package version), each section is headed by a full-width rounded pill, and with the Business Text plugin installed every row of value blocks (Fleet's Estate, Instance's Health, Capacity, Replication and Collector, Activity's Now, the Events counts and the Patch Management versions) is a card section: the header pill with a navy panel under it holding one rounded card per value, coloured by the same thresholds and value mappings as the stat panels it replaces. Fleet's Estate also has a health summary. Tables and charts are Grafana's own panels and keep Grafana's look; Grafana gives a dashboard no way to restyle them. The colours, the brand line and a logo come from a theme file that stays on the monitoring host:
+Every dashboard opens with a banner (logo, brand line and the installed package version), each section is headed by a full-width rounded pill, and with the Business Text plugin installed every row of value blocks (Fleet's Estate, Instance's Health, Capacity, Protection and Collector, Activity's Now, the Alerts counts and the Patch Management versions) is a card section: the header pill with a navy panel under it holding one rounded card per value, coloured by the same thresholds and value mappings as the stat panels it replaces. Fleet's Estate also has a health summary. Tables and charts are Grafana's own panels and keep Grafana's look; Grafana gives a dashboard no way to restyle them. The colours, the brand line and a logo come from a theme file that stays on the monitoring host:
 
 1. Copy `monitoring\theme.example.json` to `monitoring\theme.json` (ignored by git and left out of the release packages) and set `brand`, the colours (`#RRGGBB`) and optionally `logo`, an SVG or PNG for a dark background (up to 512 KB), with a path relative to the theme file, e.g. `theme\logo.svg` in `monitoring\theme\`.
 2. Publish:
@@ -120,13 +126,13 @@ Every dashboard opens with a banner (logo, brand line and the installed package 
 
 Ports: Grafana 3000 (all interfaces; put it behind the Windows firewall or bind it to 127.0.0.1 in Grafana's `conf\custom.ini` if only local use is wanted), Prometheus 9090 and windows_exporter 9182 (127.0.0.1 only, nothing to open). Everything restarts by itself after a reboot.
 
-Adding an appliance later: add it to `Servers` in the config, then create its credential file as the collector account:
+Adding an cluster later: add it to `Servers` in the config, then create its credential file as the collector account:
 
 ```
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Import-Module C:\CohesityMonitoring\Cohesity.psm1; New-CohesityCredentialFile -Path C:\CohesityMonitoring\creds\NEWNAME.xml"
 ```
 
-The next collector run picks it up; the Fleet, Activity and Patch pages show it automatically and it appears in the Instance page's server picker.
+The next collector run picks it up; the Fleet, Activity and Patch pages show it automatically and it appears in the Instance page's cluster picker.
 
 ## Install on a Linux machine
 
@@ -134,12 +140,12 @@ The same package on one Linux host: the collector runs under PowerShell 7 from a
 
 What you need:
 
-- 64-bit (x86_64) Linux with systemd: RHEL family 8 or 9 (RHEL, Rocky Linux, AlmaLinux), Debian 12, or an Ubuntu LTS release. About 2 GB of disk for the stack plus Prometheus data (roughly 50 MB per appliance per month at the default 180-day retention).
+- 64-bit (x86_64) Linux with systemd: RHEL family 8 or 9 (RHEL, Rocky Linux, AlmaLinux), Debian 12, or an Ubuntu LTS release. About 2 GB of disk for the stack plus Prometheus data (roughly 50 MB per cluster per month at the default 180-day retention).
 - Root through sudo. The installer creates a system account, `cohesity`, and the collector and every service run as it, so unlike the Windows install you do not log on as the collector account.
 - `curl`, `tar` and `gzip` (the installer checks for them), and the ICU library that PowerShell needs if the host does not have it yet: `dnf install libicu` on the RHEL family, `apt-get install libicu72` on Debian 12, `apt-get install libicu74` on Ubuntu 24.04 (other Debian-family releases: `apt-cache search --names-only '^libicu[0-9]+$'` finds the package name). The installer stops with this hint when `pwsh` does not start.
 - PowerShell 7: the installer uses a `pwsh` that is already on the PATH, otherwise it unpacks the PowerShell tarball (7.6.6, the LTS line; PowerShell 7.4 reaches end of support on 2026-11-10).
-- Network access from this machine to every appliance on the API port (https 443 by default) and, for the download step only, to github.com, dl.grafana.com and grafana.com (or the four tarballs and the plugin zip copied in by hand).
-- For each appliance, an API account. A read-only (type R) account is recommended.
+- Network access from this machine to every cluster on the API port (https 443 by default) and, for the download step only, to github.com, dl.grafana.com and grafana.com (or the four tarballs and the plugin zip copied in by hand).
+- For each cluster, an API account. Use a Viewer-role user with an API key; see [The Cohesity account](#the-cohesity-account).
 
 Steps, from a shell on the host. Commands that need root start with `sudo`; the ones after step 1 run from the install folder (`cd /opt/cohesity-monitoring`):
 
@@ -158,7 +164,7 @@ Steps, from a shell on the host. Commands that need root start with `sudo`; the 
    sudo linux/get-installers.sh
    ```
    It downloads node_exporter 1.12.1, Prometheus 3.15.0, Grafana 12.0.2, PowerShell 7.6.6 and the Business Text panel plugin 6.2.0 (the card sections; optional), and keeps files that are already there (`--force` downloads again, `--dest DIR` picks another folder, `--node-exporter-version`, `--prometheus-version`, `--grafana-version`, `--powershell-version` and `--business-text-version` pick other versions). curl takes its proxy from the environment, and sudo drops that, so with a proxy run `sudo env https_proxy=http://proxy:port linux/get-installers.sh`. With no internet access, `linux/get-installers.sh --print-urls` prints the five URLs: download them on another machine and copy the files into `installers/`.
-3. Create `Cohesity.config.json` from `Cohesity.config.example.json` (the installer does this for you if the file is missing, then stops so you can edit it) and fill in the `Servers` list as in step 3 of the Windows install: a name, IP or hostname, and credential file name per appliance, and under `Defaults` the `Scheme` and `SkipCertificateCheck` settings. The example's `creds\cohesity-01.xml` paths work on Linux as written (`creds/cohesity-01.xml` is the same file).
+3. Create `Cohesity.config.json` from `Cohesity.config.example.json` (the installer does this for you if the file is missing, then stops so you can edit it) and fill in the `Servers` list as in step 3 of the Windows install: a name, IP or hostname, and credential file name per cluster, and under `Defaults` the `Scheme` and `SkipCertificateCheck` settings. The example's `creds\cohesity-01.xml` paths work on Linux as written (`creds/cohesity-01.xml` is the same file).
    ```
    sudo cp Cohesity.config.example.json Cohesity.config.json
    ```
@@ -167,7 +173,7 @@ Steps, from a shell on the host. Commands that need root start with `sudo`; the 
    ```
    sudo linux/install.sh
    ```
-   It installs PowerShell if `pwsh` is missing, creates the `cohesity` service account, makes the package readable by it, prompts for each appliance's API account that has no credential file yet, runs the collector once as a test, then installs node_exporter, Prometheus and Grafana (with the data source and dashboards provisioned), the systemd units and the collector timer, and prints a summary table (OK, Skipped, Missing installer or Check per step) and what to do next. Every step is idempotent: if a step reports a missing installer or a check, fix it and re-run. The exit status is 0 when no row is Check or Missing installer.
+   It installs PowerShell if `pwsh` is missing, creates the `cohesity` service account, makes the package readable by it, prompts for each cluster's API account that has no credential file yet, runs the collector once as a test, then installs node_exporter, Prometheus and Grafana (with the data source and dashboards provisioned), the systemd units and the collector timer, and prints a summary table (OK, Skipped, Missing installer or Check per step) and what to do next. Every step is idempotent: if a step reports a missing installer or a check, fix it and re-run. The exit status is 0 when no row is Check or Missing installer.
 5. Check it:
    ```
    linux/cohesity-control.sh status
@@ -227,13 +233,13 @@ Add this job to `scrape_configs` in that Prometheus's `prometheus.yml` and reloa
 
 The `keep` rule is the one in `monitoring/prometheus.yml`: it keeps the Cohesity series and the textfile collector's own health metrics and nothing else from the host. Import the five dashboards, `monitoring/dashboards/*.json` (or, for the site theme, the files `Publish-CohesityDashboards.ps1` writes to `monitoring/dashboards-live/`), into that Grafana (Dashboards > New > Import) and choose your Prometheus in each dashboard's Data source box (they open on a data source with the uid `cohesity-prometheus`, which is the one the full-stack install provisions).
 
-**Credentials on Linux.** There is no DPAPI on Linux: `New-CohesityCredentialFile` saves the credential with Export-Clixml and the file is **not encrypted**. What protects it is file permissions: `creds/` is mode 0700 and each credential file 0600, owned by the service account `cohesity`, so only that account and root can read them. The installer prompts for each missing file (as `cohesity`; a file that several appliances share is asked for once) unless you pass `--skip-credentials`. Unlike a DPAPI file, one of these works on any machine it is copied to, so keep `creds/` out of backups that others can read.
+**Credentials on Linux.** There is no DPAPI on Linux: `New-CohesityCredentialFile` saves the credential with Export-Clixml and the file is **not encrypted**. What protects it is file permissions: `creds/` is mode 0700 and each credential file 0600, owned by the service account `cohesity`, so only that account and root can read them. The installer prompts for each missing file (as `cohesity`; a file that several clusters share is asked for once) unless you pass `--skip-credentials`. Unlike a DPAPI file, one of these works on any machine it is copied to, so keep `creds/` out of backups that others can read.
 
 Ports: Grafana 3000 (all interfaces; to reach it from other machines open the port in the host firewall, `sudo firewall-cmd --permanent --add-port=3000/tcp && sudo firewall-cmd --reload` or `sudo ufw allow 3000/tcp`), Prometheus 9090 and node_exporter 9182 (127.0.0.1 only, nothing to open; with `--collector-only` node_exporter is on all interfaces, as above). Everything restarts by itself after a reboot: the units are enabled, and the collector runs again shortly after boot.
 
 **SELinux.** On a RHEL family host in enforcing mode this package needs no policy module: the binaries under `/opt` carry the `usr_t` file context and systemd runs them in the `unconfined_service_t` domain. A site with a stricter policy sees denials in `sudo ausearch -m AVC -ts recent` (add `-c pwsh`, `-c grafana`, `-c prometheus` or `-c node_exporter` to look at one program) and in the units' `journalctl`. That check is part of the maintainer's acceptance test on a RHEL host, not of CI.
 
-Adding an appliance later: add it to `Servers` in the config, then re-run `sudo linux/install.sh` with your usual switches. It asks only for the credential files that are missing, and the next collector run picks the appliance up; the dashboards show it automatically.
+Adding an cluster later: add it to `Servers` in the config, then re-run `sudo linux/install.sh` with your usual switches. It asks only for the credential files that are missing, and the next collector run picks the cluster up; the dashboards show it automatically.
 
 ## Upgrading an existing install
 
@@ -275,35 +281,46 @@ It rewrites a unit file or a config only when it changed and restarts only the s
 
 Each check is independent: a failure shows as `cohesity_check_success{check="..."} 0` and the rest carry on.
 
-| Cadence | Checks |
-|---|---|
-| Every run (5 min) | version, time, failover, storagepool, physicaldevice, adapters, storagethreshold, deduperepository, reclamation, dedupepolicy, dedupehistory, dedupeactivity, dedupequeue, dedupejobs, replicationqueue, uniquereplicationqueue, replicationsetting, replicationjobs, virtuallibrary, virtualdrive, tapecaching, physicallibrary, iejob, eventlog |
-| Every 15 min | tapeinventory (pages through every virtual tape), tapecachingreclaim |
-| Every 60 min | serverinfo, patches, serveroptions, encryption, failoverconfig, network, bonding, ntp, dedupereplication, lvitsource, reclamationpolicy, dedupecleanup, tleproperties, iejobproperties, activitydatabase, clients, fcinitiators, iscsi, hostedbackup, users, objectstorage, syslogalert, autosave |
+| Cadence | Check | API |
+|---|---|---|
+| Every run (5 min) | cluster | v1 `cluster?fetchStats=true`: identity, version, capacity, usage, throughput, IOPS, latency, data reduction, clock |
+| | status | v1 `cluster/status`: stopped services, services in sync, cluster operation, node status |
+| | storage | v2 `stats/cluster-storage` |
+| | nodes | v2 `clusters/nodes?fetchStats=true` |
+| | storagedomains | v2 `storage-domains?includeStats=true` |
+| | alertstats, alerts | v1 `stats/alerts`; v1 `alerts` (open alerts, and new ones since the last run, archived to `events\`) |
+| | protectiongroups | v2 `data-protect/protection-groups?includeLastRunInfo=true` (paged): last backup, replication and archive run of every group |
+| | runs, runprogress | v2 `data-protect/runs/summary` (last 24 h); v2 `data-protect/runs/{id}/progress` for running runs (up to 50) |
+| | sla | v1 `stats/protectionRuns/lastRun` |
+| | failedobjects | v2 `protection-groups/{id}/runs?numRuns=1&includeObjectDetails=true`, only for groups whose last run failed or warned (up to 20 groups, 200 objects) |
+| | recoveries | v2 `data-protect/recoveries` (last 24 h) |
+| Every 15 min | protectionsummary, sources, externaltargets, vaultstats, views, antivirus | v1 `stats/protectionSummary`; v2 `sources/registrations`; v2 `external-targets`; v1 `stats/vaults`; v2 `file-services/views-summary`; v2 `antivirus-service/infected-files` |
+| Every 60 min | policies, remoteclusters, consumers, license, patches | v2 `policies`; v2 `remote-clusters`; v1 `stats/consumers`; v1 `licenseUsage`; v2 `patch-management/applied-patches` and `available-patches` |
 
-The 15- and 60-minute checks are cached in `state\` and re-published on the runs in between. `-Refresh` ignores the cache.
+The 15- and 60-minute checks are cached in `state\` and re-published on the runs in between. `-Refresh` ignores the cache. Timestamps from the API are microseconds (`*Usecs`) and are published as Unix seconds; the v1 I/O counters cover the last 30 seconds and are divided by 30.
 
-Per-job detail (`dedupejobs`, `replicationjobs`) reads one API call per queued job, capped at 100 jobs per appliance per run. The API has no start time for a dedupe job, so the collector records when it first saw each job (`state\jobs-*.json`); reclamation and prune give only idle/running/failed, so the collector tracks their transitions (`state\maintenance-*.json`) to give each run a start, end and duration, accurate to one collector interval.
+**Parallel collection.** With more than two clusters the collector runs one child process per cluster, up to `-MaxParallel` at a time (default: one worker per four clusters, at most 8). Each cluster then writes its own `metrics\cohesity-<cluster>.prom` and `cohesity.prom` carries only the collector summary. `-MaxParallel 1` forces one process.
 
-**Parallel collection.** With more than two appliances the collector runs one child process per appliance, up to `-MaxParallel` at a time (default: 1 for up to two appliances, otherwise one worker per four appliances, at most 8). Each appliance then writes its own `metrics\cohesity-<server>.prom` and `cohesity.prom` carries only the collector summary (`cohesity_collector_server_exit_code{server}`, `cohesity_collector_parallel_processes`, `cohesity_collector_run_duration_seconds`). `-MaxParallel 1` forces the single-process mode. The scheduled task needs no change; windows_exporter reads every `.prom` file in `metrics\`.
-
-Optional settings under `Defaults` in `Cohesity.config.json`:
+Optional settings in `Cohesity.config.json` (per cluster, or under `Defaults`):
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `DisabledChecks` | `[]` | Checks to skip, e.g. `["tapecaching", "objectstorage"]` for features you don't use |
-| `CollectEventLog` | `true` | Download new event log entries every run |
-| `EventLogDirectory` | `events` | Where the raw daily CSVs go |
-| `EventLogRetentionDays` | `90` | Older CSVs are deleted |
+| `AuthMode` | `ApiKey` | `ApiKey` or `Password` (see [The Cohesity account](#the-cohesity-account)) |
+| `Domain` | `LOCAL` | Login domain in `Password` mode |
+| `Scheme`, `Port`, `SkipCertificateCheck`, `TimeoutSec` | `https`, 0 (default port), `false`, 60 | Transport; `SkipCertificateCheck` for self-signed cluster certificates |
+| `DisabledChecks` | `[]` | Checks to skip, e.g. `["antivirus", "views"]` for features you don't use |
+| `CollectAlerts` | `true` | Read open and new alerts every run |
+| `AlertLogDirectory` | `events` | Where the raw daily alert CSVs go |
+| `AlertLogRetentionDays` | `90` | Older CSVs are deleted |
 | `StateDirectory` | `state` | Collector state |
 
-Not collected on purpose: SNMP settings (they include community strings and passwords), encryption keys, X-ray, failover preflight checks and device rescans (they make the appliance do work), user names, and the system variable list. Hardware sensors aren't in the API; use IPMI/iDRAC or SNMP for those.
+Not collected on purpose: anything with credentials (`includeSourceCredentials` and `includeEncryptedCredentials` are never requested), encryption keys and KMS settings, API keys, user and role lists, audit logs, and every call that starts work on the cluster (refreshes, tests, downloads). Hardware sensors are not in the API; use IPMI/iDRAC or SNMP for those.
 
 The installer steps are:
 
 | # | Step | What it does |
 |---|---|---|
-| 1 | Credentials | Creates `creds\<server>.xml` for each appliance, readable only by this user on this machine, and restricts the folder ACL |
+| 1 | Credentials | Creates `creds\<cluster>.xml` for each cluster (the API key, or user and password), readable only by this user on this machine, and restricts the folder ACL |
 | 2 | Collector test | Runs the collector once and reports the result |
 | 3 | windows_exporter | Silent MSI install with the textfile collector pointed at `metrics\` |
 | 4 | Prometheus | Extracts to `prometheus\` and runs at startup as SYSTEM (scheduled task "Cohesity Prometheus"). Listens on localhost only, 180-day retention |
@@ -311,23 +328,34 @@ The installer steps are:
 | 6 | Collector task | Scheduled task "Cohesity Metrics Collector", every 5 minutes |
 
 Switches:
-- `-SkipExporter`, `-SkipPrometheus` or `-SkipGrafana` if the server already runs that component.
+- `-SkipExporter`, `-SkipPrometheus` or `-SkipGrafana` if the host already runs that component (see [Running next to StorSafe monitoring](#running-next-to-storsafe-monitoring)).
 - `-IntervalMinutes`, `-PrometheusRetentionDays`.
 - `-RunAsUser DOMAIN\svc-account` to run the task as a different account. If you use it, create the credential files while logged on as that account.
+
+## Running next to StorSafe monitoring
+
+Both packages use the same ports (windows_exporter/node_exporter 9182, Prometheus 9090, Grafana 3000), so on one host install one of them in full and the other collector-only:
+
+1. Install StorSafe monitoring as usual (or keep the existing install).
+2. Install this package with `-SkipExporter -SkipPrometheus -SkipGrafana` (Linux: `--collector-only`), and set `TextfileDirectory` in `Cohesity.config.json` to StorSafe's `metrics` folder, so the one exporter serves both `storsafe.prom` and `cohesity.prom`.
+3. In StorSafe's `monitoring\prometheus.yml`, extend the `metric_relabel_configs` keep regex with `|cohesity_.*`, and restart Prometheus.
+4. Add this package's data source and dashboards to the existing Grafana: copy `monitoring\grafana\cohesity-datasource.yaml` and `cohesity-dashboards.yaml` into Grafana's provisioning folders (point the latter at this package's `monitoring\dashboards-live`), run `Publish-CohesityDashboards.ps1 -HtmlPanels`, and restart Grafana once.
+
+Prometheus memory and disk grow with series count; a cluster typically adds 1,500 to 3,000 series, about the same as a StorSafe cluster.
 
 ## Day-to-day
 
 ```powershell
 .\Get-CohesityActivity.ps1                 # interactive: menu + prompts
-.\Get-CohesityActivity.ps1 -All -NonInteractive -IncludeTapeInventory
-.\Get-CohesityLoadedTapes.ps1 -Server COHESITY-01
+.\Get-CohesityActivity.ps1 -All -NonInteractive -Hours 12 -IncludeAllRuns
+.\Get-CohesityFailedObjects.ps1 -Server COHESITY-01 -IncludeWarnings
 .\Export-CohesityMetrics.ps1 -All -NonInteractive   # manual collector run (-MaxParallel 1 to force one process)
 (Get-ScheduledTaskInfo 'Cohesity Metrics Collector').LastTaskResult   # 0 OK, 2 a check failed
 ```
 
-Exit codes for all scripts: 0 OK/idle, 1 informational (work active, tapes loaded), 2 attention or API error, 3 usage/config error.
+Exit codes for all scripts: 0 OK/idle, 1 informational (runs active, failed objects found), 2 attention or API error, 3 usage/config error.
 
-A check for a feature you don't use (e.g. `tapecaching`) shows as `cohesity_check_success{check="tapecaching"} 0`. Add it to `DisabledChecks` in the config to stop it running.
+A check for a feature you don't use (e.g. `antivirus` on a cluster without the antivirus service) shows as `cohesity_check_success{check="antivirus"} 0`. Add it to `DisabledChecks` in the config to stop it running.
 
 ## Stopping and starting for maintenance
 
@@ -338,14 +366,14 @@ A check for a feature you don't use (e.g. `tapecaching`) shows as `cohesity_chec
 | See what is running | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\CohesityMonitoring\CohesityMonitoringControl.ps1 Status` |
 | Host maintenance (patching, disk work): stop everything cleanly | `... CohesityMonitoringControl.ps1 Stop` |
 | Afterwards | `... CohesityMonitoringControl.ps1 Start` |
-| An appliance is being patched or rebooted: stop polling so it logs no failed checks or logins | `... CohesityMonitoringControl.ps1 Pause` |
-| Appliance back | `... CohesityMonitoringControl.ps1 Resume` |
+| An cluster is being patched or rebooted: stop polling so it logs no failed checks or logins | `... CohesityMonitoringControl.ps1 Pause` |
+| Cluster back | `... CohesityMonitoringControl.ps1 Resume` |
 
 Notes:
 
 - `Stop` disables the collector task, stops Prometheus (its scheduled task), then Grafana and windows_exporter. Nothing restarts until `Start`, not even after a reboot, so a stopped host can't come back half-running. `Start` reverses it and runs the collector once.
 - A plain reboot without `Stop` is fine too: the services are Automatic, Prometheus starts at boot, and the collector task resumes its 5-minute schedule. Prometheus replays its write-ahead log at start, which can take a minute or two.
-- `Pause` only disables the collector task. Prometheus and Grafana keep running, the dashboards keep the last collected values, and the Instance page's collector row shows how old they are. To pause just one appliance of many, remove it from `Servers` in the config instead (and put it back afterwards); the collector reads the config every run.
+- `Pause` only disables the collector task. Prometheus and Grafana keep running, the dashboards keep the last collected values, and the Instance page's collector row shows how old they are. To pause just one cluster of many, remove it from `Servers` in the config instead (and put it back afterwards); the collector reads the config every run.
 - If you have set up the "Collector stopped" alert from the table below, expect it to fire while paused or stopped; silence it in Grafana (Alerting > Silences) for the maintenance window.
 - The same things by hand: tasks `Cohesity Metrics Collector` and `Cohesity Prometheus` in Task Scheduler (`schtasks /Change /TN "Cohesity Metrics Collector" /DISABLE`), services `windows_exporter` and `Grafana` (`net stop Grafana`).
 - Full backup of the monitoring host's state is the install folder plus Grafana's data (`%ProgramFiles%\GrafanaLabs\grafana\data`, for users and any alert rules you add). `creds\` only works on this machine for this user, so a restore elsewhere means re-running the installer's credential step.
@@ -357,8 +385,8 @@ Notes:
 | See what is running | `linux/cohesity-control.sh status` |
 | Host maintenance (patching, disk work): stop everything cleanly | `sudo linux/cohesity-control.sh stop` |
 | Afterwards | `sudo linux/cohesity-control.sh start` |
-| An appliance is being patched or rebooted: stop polling so it logs no failed checks or logins | `sudo linux/cohesity-control.sh pause` |
-| Appliance back | `sudo linux/cohesity-control.sh resume` |
+| An cluster is being patched or rebooted: stop polling so it logs no failed checks or logins | `sudo linux/cohesity-control.sh pause` |
+| Cluster back | `sudo linux/cohesity-control.sh resume` |
 
 Notes:
 
@@ -368,7 +396,7 @@ Notes:
 - A plain reboot without `stop` is fine: the units start by themselves and the collector runs again shortly after boot, then on its schedule. The "Collector stopped" alert from the table below fires on Linux too while the collector is paused or stopped.
 - Full backup of the monitoring host's state is the install folder: the config, `creds/`, and the Prometheus and Grafana data in `prometheus/data` and `grafana/data`. `creds/` holds the API passwords unencrypted, so protect the backup like a secret.
 
-A re-run of `install.sh` re-renders the unit files, so a hand edit to one of them is lost. Site settings go in a drop-in instead (`sudo systemctl edit cohesity-collector.service`); the usual one is a corporate proxy, which the collector honours on Linux. The appliances are normally on-site, hence `no_proxy`:
+A re-run of `install.sh` re-renders the unit files, so a hand edit to one of them is lost. Site settings go in a drop-in instead (`sudo systemctl edit cohesity-collector.service`); the usual one is a corporate proxy, which the collector honours on Linux. The clusters are normally on-site, hence `no_proxy`:
 
 ```
 [Service]
@@ -384,75 +412,65 @@ Environment=no_proxy=127.0.0.1,localhost,.example.com
 
 | Alert | Query | For | Severity |
 |---|---|---|---|
-| Appliance API down | `cohesity_up == 0` | 10m | Critical |
+| Cluster API down | `cohesity_up == 0` | 10m | Critical |
 | Collector stopped | `time() - cohesity_collector_last_run_timestamp_seconds > 900` | 5m | Critical |
-| Failover not normal | `cohesity_failover_healthy == 0` | 5m | Critical |
-| LUN offline | `cohesity_physicaldevice_online == 0` | 5m | Critical |
-| Pool near threshold | `100 * cohesity_storagepool_used_bytes / cohesity_storagepool_size_bytes > on(server) group_left() (cohesity_storage_threshold_percent - 5)` | 30m | Warning |
-| Reclaim/prune failed | `cohesity_dedupe_maintenance_status{status="failed"} == 1` | 15m | Major |
-| Dedupe policy error | `cohesity_dedupe_policy_status{status=~"error\|failed"} == 1` | 15m | Major |
-| Policy suspended with tapes | `cohesity_dedupe_policy_suspended == 1 and on(server, policy) cohesity_dedupe_policy_tapes > 0` | 1h | Warning |
-| Replication suspended | `cohesity_replication_suspended == 1` | 30m | Major |
-| Unique replication stuck | `time() - (cohesity_unique_replication_oldest_job_start_timestamp_seconds > 0) > 43200` | 30m | Warning |
+| Protection group last run failed | `cohesity_group_last_run_ok == 0` | 5m | Major |
+| SLA missed | `cohesity_group_last_run_sla_violated == 1` | 5m | Warning |
+| Replication or archive failed | `cohesity_replication_last_status{status=~"failed\|canceled"} == 1 or cohesity_archive_last_status{status=~"failed\|canceled"} == 1` | 15m | Major |
+| Group not backed up in 26 h | `time() - cohesity_group_last_run_end_timestamp_seconds > 93600 and on(cluster, group) cohesity_group_paused == 0` | 30m | Warning |
+| Critical alert open | `cohesity_alerts_open{severity="critical"} > 0` | 5m | Critical |
+| Storage over 80 % | `100 * cohesity_storage_used_bytes / cohesity_storage_capacity_bytes > 80` | 30m | Warning |
+| Node out or disk offline | `cohesity_node_in_cluster == 0 or cohesity_node_offline_disks > 0` | 15m | Major |
+| Cluster service stopped | `cohesity_cluster_stopped_services > 0` | 15m | Major |
+| Source refresh failing | `cohesity_source_status{status="failed"} == 1` | 1h | Warning |
+| Infected files found | `cohesity_av_infected_files_found > 0` | 15m | Major |
+| Licence expires within 30 days | `cohesity_license_expiry_timestamp_seconds - time() < 30 * 86400` | 1h | Warning |
+| Clock offset | `abs(cohesity_time_offset_seconds) > 60` | 30m | Warning |
 | Collector check failing | `cohesity_check_success == 0` | 30m | Warning |
 
-Add a contact point (email or Teams webhook) under Alerting > Contact points.
+Add a contact point (email or Teams webhook) under Alerting > Contact points. The cluster raises its own alerts too; the "Critical alert open" rule forwards them, and Cohesity's own SMTP/SNMP alerting is unaffected.
 
 ## Metrics reference
 
+Every series carries `cluster` (the `Name` from the config). Info metrics have the value 1 unless noted; `status` labels are lower-case API values (`succeeded`, `succeededwithwarning`, `failed`, `running`, ...), environment labels drop Cohesity's `k` prefix (`kVMware` becomes `vmware`).
+
 | Metric | Labels |
 |---|---|
-| `cohesity_up` | server |
-| `cohesity_info` | server, product, version, build, apiversion |
-| `cohesity_check_success` | server, check |
-| `cohesity_collect_duration_seconds`, `cohesity_collector_last_run_timestamp_seconds`, `cohesity_collector_run_duration_seconds`, `cohesity_collector_parallel_processes`, `cohesity_collector_server_exit_code`, `cohesity_collector_info` | server / none / server / version |
-| `cohesity_failover_status` (one-hot), `cohesity_failover_healthy` | server, status |
-| `cohesity_storagepool_size_bytes`, `_used_bytes` | server, pool, resourcetype |
-| `cohesity_physicaldevice_size_bytes`, `_used_bytes`, `_online` | server, acsl, name, category, reservation |
-| `cohesity_storage_threshold_percent` | server |
-| `cohesity_dedupe_maintenance_status` (one-hot), `_running_since_timestamp_seconds`, `_last_run_start_timestamp_seconds`, `_last_run_end_timestamp_seconds`, `_last_run_duration_seconds`, `_last_run_result` (one-hot) | server, process (reclaim/prune), status / result |
-| `cohesity_dedupe_policy_status` (one-hot), `_suspended`, `_tapes`, `_last_run_timestamp_seconds`, `_next_run_timestamp_seconds` | server, policy, status / trigger |
-| `cohesity_dedupe_queue_jobs_total`, `_jobs`, `_undeduped_bytes`, `_throughput_bytes_per_second` | server, state |
-| `cohesity_replication_queue_jobs_total`, `_jobs` | server, queue (classic/unique), state |
-| `cohesity_dedupe_job_info` (one per queued tape), `_progress_percent`, `_throughput_bytes_per_second`, `_undeduped_bytes`, `_data_bytes`, `_scanned_bytes`, `_first_seen_timestamp_seconds`, `cohesity_dedupe_jobs_detailed` | server, policy, barcode (+ tape, state, trigger, drive, destination_drive, replicationmode, parser on `_info`) |
-| `cohesity_replication_job_info` (one per job and target), `_progress_percent`, `_throughput_bytes_per_second`, `_total_bytes`, `_transmitted_bytes`, `_remaining_seconds`, `_first_seen_timestamp_seconds`, `_start_timestamp_seconds` (unique queue), `_next_retry_timestamp_seconds`, `_retries_left` (classic queue), `cohesity_replication_jobs_detailed` | server, queue (dedupe/classic/classic-dedupe/unique), barcode, target (+ direction, policy, tape, source, targetip, state, phase, mode on `_info`) |
-| `cohesity_unique_replication_oldest_job_start_timestamp_seconds`, `cohesity_replication_suspended` | server |
-| `cohesity_vtl_slots`, `_tapes`, `_drives`, `_loaded_drives` | server, library |
-| `cohesity_virtualized_disk_size_bytes`, `_used_bytes`, `cohesity_tapecaching_unmigrated_bytes`, `_reclaimable_bytes`, `_reclaim_eligible_tapes` | server |
-| `cohesity_check_last_success_timestamp_seconds` | server, check |
-| `cohesity_time_seconds`, `cohesity_time_offset_seconds` | server |
-| `cohesity_adapter_paths` | server, adapter, vendor, type, mode, wwpn |
-| `cohesity_dedupe_repository_enabled`, `_info`, `_failover_enabled`, `_failover_status`, `_taken_over`, `_associated_servers` | server (+ cluster, type, mode / status) |
-| `cohesity_dedupe_repository_disk_size_bytes`, `_disk_online` | server, node, role (data/index/folder), name |
-| `cohesity_dedupe_policy_info`, `cohesity_dedupe_policy_replication_suspended` | server, policy, cluster, replicationmode / target |
-| `cohesity_dedupe_runs_24h` | server, policy, status |
-| `cohesity_dedupe_24h_scanned_bytes`, `_unique_bytes`, `_ratio`, `_replicated_bytes`, `_replicated_unique_bytes`, `_tapes`, `_duration_seconds` | server, policy |
-| `cohesity_dedupe_run_last_timestamp_seconds`, `cohesity_dedupe_run_last_status` | server, policy (+ status, trigger) |
-| `cohesity_dedupe_completed_run_timestamp_seconds`, `_ratio`, `_scanned_bytes`, `_unique_bytes`, `_tapes`, `_duration_seconds`, `_replicated_bytes`, `_replicated_unique_bytes`, `_replication_ratio`, `_replication_duration_seconds` | server, policy |
-| `cohesity_dedupe_active_scans(_total)`, `_scan_throughput_bytes_per_second`, `_scan_remaining_bytes`, `_replications(_total)`, `_replication_throughput_bytes_per_second`, `_replication_remaining_bytes`, `_replication_remaining_seconds` | server, policy (+ status / phase) |
-| `cohesity_standalone_drives`, `cohesity_standalone_drive_loaded` | server, drive, barcode |
-| `cohesity_tapes_total`, `cohesity_tapes`, `_size_bytes`, `_used_bytes`, `_empty` | server, location |
-| `cohesity_vtl_tape_size_bytes`, `_tape_used_bytes`, `_tapes_empty` | server, library |
-| `cohesity_tapes_by_status` | server, field, status |
-| `cohesity_tapes_with_property` | server, property |
-| `cohesity_replica_tapes`, `_oldest_replicated_timestamp_seconds`, `_newest_replicated_timestamp_seconds` | server, source |
-| `cohesity_replica_tapes_not_replicated_within` | server, source, age (24h/48h/7d/never) |
-| `cohesity_physical_libraries`, `cohesity_physical_library_status`, `_disabled`, `_tapes`, `_loaded_tapes`, `_slots` | server, library, serialno / status |
-| `cohesity_physical_drive_status`, `_disabled` | server, library, drive, status, barcode |
-| `cohesity_iejob_total`, `_jobs`, `_jobs_by_type`, `_running_transferred_bytes`, `_oldest_running_start_timestamp_seconds` | server (+ status, jobtype) |
-| `cohesity_events_total` (counter), `cohesity_events_new` | server, severity |
-| `cohesity_event_recent` (20 newest non-informational; value is the event time, Unix seconds) | server, severity, time, id, message |
-| `cohesity_eventlog_columns_detected` | server |
-| `cohesity_server_info`, `_memory_bytes`, `_swap_bytes`, `_cpus`, `_storsight_running` | server (+ hostname, role, make, model, osversion, ...) |
-| `cohesity_patches_installed`, `cohesity_patch_info` | server, patch, description |
-| `cohesity_server_option_enabled`, `cohesity_encryption_option` | server, option |
-| `cohesity_failover_config_info`, `_selfcheck_interval_seconds`, `_heartbeat_interval_seconds`, `_autorecovery_enabled` | server (+ type, partner, partnerip, powercontrol) |
-| `cohesity_nic_speed_mbps`, `_mtu`, `_dhcp`, `cohesity_network_info`, `cohesity_network_service_enabled`, `cohesity_bond_members`, `cohesity_ntp_servers` | server, nic / group / service |
-| `cohesity_dedupe_replication_partners`, `_partner_info`, `_connections`, `_timeout_seconds`, `cohesity_replica_source_info` | server, direction, partner |
-| `cohesity_reclamation_policy_enabled`, `_usage_check_interval_seconds`, `_schedule_info`, `cohesity_dedupe_cleanup_needed` | server (+ trigger) |
-| `cohesity_vtl_compression_enabled`, `_retain_tape_enabled`, `cohesity_tapecaching_*_threshold_percent`, `cohesity_iejob_retry_*`, `cohesity_activity_db_*` | server |
-| `cohesity_clients(_total)`, `cohesity_fc_initiators`, `cohesity_iscsi_targets`, `cohesity_iscsi_initiators`, `cohesity_hosted_backup_devices(_total)`, `cohesity_user_accounts`, `cohesity_objectstorage_accounts(_total)` | server (+ protocol / assigned / type / provider) |
-| `cohesity_syslog_alert_enabled`, `_patterns`, `_check_interval_seconds`, `cohesity_config_autosave_enabled`, `_copies` | server |
+| `cohesity_up`, `cohesity_collect_duration_seconds` | cluster |
+| `cohesity_check_success`, `cohesity_check_last_success_timestamp_seconds` | cluster, check |
+| `cohesity_collector_info`, `cohesity_collector_last_run_timestamp_seconds`, `cohesity_collector_*` | version / cluster |
+| `cohesity_info` | cluster, name, id, version, patch, type, deployment |
+| `cohesity_cluster_nodes`, `_encryption_enabled`, `_upgrade_aborted`, `_patch_apply_aborted`, `cohesity_time_seconds`, `cohesity_time_offset_seconds` | cluster |
+| `cohesity_cluster_capacity_bytes`, `_usable_capacity_bytes`, `_used_bytes`, `_system_capacity_bytes`, `_system_used_bytes`, `_data_reduction_ratio` | cluster |
+| `cohesity_cluster_throughput_bytes_per_second`, `_iops`, `_latency_seconds` | cluster, op (read/write) |
+| `cohesity_cluster_data_bytes` | cluster, kind (data_in, data_in_after_dedup, data_written, local_written, cloud_written, logical, consumed, local_physical, cloud_physical) |
+| `cohesity_cluster_stopped_services`, `_stopped_service`, `_services_synced`, `_operation` | cluster (+ service / operation) |
+| `cohesity_node_in_cluster`, `_maintenance_mode`, `_marked_for_removal`, `_last_upgrade_timestamp_seconds`, `_status_info` | cluster, node_id, ip (+ version, operation, uptime) |
+| `cohesity_node_info`, `_offline_disks`, `_capacity_bytes`, `_used_bytes`, `_removal`, `_disks` | cluster, node (+ node_id, ip, version, model, hardware, serial, type / state / tier) |
+| `cohesity_storage_capacity_bytes`, `_used_bytes`, `_available_bytes`, `cohesity_storage_service_bytes` | cluster (+ service, kind) |
+| `cohesity_storage_domain_info`, `_quota_bytes`, `_quota_alert_bytes`, `_bytes`, `_files` | cluster, domain (+ domain_id, partition, encryption, tolerances / kind) |
+| `cohesity_alerts_open`, `_open_by_category`, `cohesity_alerts_total` (counter), `cohesity_alerts_new`, `cohesity_alerts_active` | cluster, severity (+ category / bucket) |
+| `cohesity_alert_recent` (20 newest open critical and warning; value is the latest occurrence, Unix seconds) | cluster, severity, category, code, name, id, message, occurrences |
+| `cohesity_group_info`, `_active`, `_paused`, `_protected_objects` | cluster, group (+ group_id, env, policy, domain, priority) |
+| `cohesity_group_last_run_status` (one-hot), `_ok`, `_sla_violated`, `_start_timestamp_seconds`, `_end_timestamp_seconds`, `_duration_seconds`, `_objects`, `_logical_bytes`, `_read_bytes`, `_written_bytes` | cluster, group (+ status, run_type / result) |
+| `cohesity_replication_last_status` (one-hot), `_start_timestamp_seconds`, `_end_timestamp_seconds`, `_sla_violated`, `_percent`, `_logical_bytes`, `_physical_bytes` | cluster, group, target (+ status) |
+| `cohesity_archive_last_status` (one-hot), `_start_timestamp_seconds`, `_end_timestamp_seconds`, `_sla_violated`, `_logical_bytes`, `_physical_bytes`, `_transfer_rate_bytes_per_second` | cluster, group, target (+ target_type, status) |
+| `cohesity_runs_24h`, `cohesity_group_runs_24h`, `cohesity_group_24h_written_bytes`, `_logical_bytes`, `_sla_violations` | cluster (+ group), status |
+| `cohesity_runs_active`, `cohesity_run_info`, `cohesity_run_start_timestamp_seconds`, `_first_seen_timestamp_seconds`, `_objects`, `_objects_done`, `_written_bytes`, `_logical_bytes` | cluster, group, run_id (+ env, status, full) |
+| `cohesity_run_progress_percent`, `cohesity_run_remaining_seconds`, `cohesity_runs_detailed` | cluster, group, run_id, task (backup/replication/archive), target |
+| `cohesity_last_runs`, `cohesity_last_runs_objects_failed`, `cohesity_last_runs_env_objects` | cluster (+ result, env) |
+| `cohesity_failed_object_info` (value is the end time, Unix seconds), `cohesity_failed_objects_listed` | cluster, group, object, env, source, result, attempts, message |
+| `cohesity_recoveries_24h`, `cohesity_recoveries_active`, `cohesity_recovery_info` (value is the start time) | cluster (+ action, status, name, env, user) |
+| `cohesity_objects`, `cohesity_object_bytes`, `cohesity_objects_by_env`, `cohesity_object_bytes_by_env` | cluster, protected (+ env) |
+| `cohesity_sources`, `cohesity_source_status`, `_last_refresh_timestamp_seconds`, `_registered_timestamp_seconds` | cluster, source, env (+ status) |
+| `cohesity_external_target_info`, `_registered`, `cohesity_archive_usage_bytes`, `cohesity_vault_usage_bytes` | cluster, target (+ purpose, ownership, status, worm, error / provider, type) |
+| `cohesity_views`, `cohesity_views_bytes`, `cohesity_views_files` | cluster (+ kind) |
+| `cohesity_av_infected_files_found`, `cohesity_av_infected_files` | cluster (+ view, state) |
+| `cohesity_policy_info`, `_groups`, `_protected_objects`, `_replication_targets`, `_archive_targets` | cluster, policy (+ policy_id, replicated, datalock) |
+| `cohesity_remote_clusters`, `cohesity_remote_cluster_info`, `_tls_enabled` | cluster, remote (+ remote_id, purpose, encryption) |
+| `cohesity_consumer_bytes` | cluster, group, kind |
+| `cohesity_license_entitled_gib`, `_used_gib`, `_overused_gib`, `_expiry_timestamp_seconds` | cluster, feature |
+| `cohesity_patches_installed`, `cohesity_patches_available`, `cohesity_patch_info` (value is when it was applied) | cluster (+ service, version, level) |
 
 ## Repository
 

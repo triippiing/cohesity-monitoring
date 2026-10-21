@@ -21,7 +21,7 @@ tools/test/out/
 *.part
 __pycache__/
 
-# Site configuration (appliance names and addresses); start from Cohesity.config.example.json
+# Site configuration (cluster names and addresses); start from Cohesity.config.example.json
 Cohesity.config.json
 # Site theme (brand, colours, logo); start from monitoring/theme.example.json. The published
 # dashboards are written from the package's by Publish-CohesityDashboards.ps1.

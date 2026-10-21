@@ -13,8 +13,8 @@ credential files to that user and machine). The folder you run it from is the in
   <root>\reports      CSV reports from the Get-* scripts
   <root>\creds        DPAPI credential files (ACL restricted to the run-as user and Administrators)
   <root>\installers   drop the third-party installers here (see installers\README.txt)
-  <root>\state        collector state (event log bookmark, cached hourly checks)
-  <root>\events       daily raw event log CSVs per appliance
+  <root>\state        collector state (alert bookmark, run first-seen times, cached slower checks)
+  <root>\events       daily raw alert CSVs per cluster
   <root>\prometheus   Prometheus binaries, config and data (created at install)
 
 Each step is idempotent and skips itself if the component is already installed or its installer is

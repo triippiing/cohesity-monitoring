@@ -1,1 +1,1 @@
-Raw Cohesity event log, appended every collector run: Cohesity-Events-<server>-YYYYMMDD.csv (90-day retention by default).
+Raw Cohesity alert archive, appended every collector run with the alerts first seen since the last run: Cohesity-Alerts-<cluster>-YYYYMMDD.csv (90-day retention by default, AlertLogRetentionDays).

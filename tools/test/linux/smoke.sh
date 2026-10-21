@@ -16,7 +16,7 @@
 # the runtime folders keep only their README.txt), the mock config and credential are put in
 # place, and the installers are downloaded by linux/get-installers.sh. SMOKE_INSTALLERS=<folder>
 # copies the *.tar.gz (and *.zip) files of that folder instead, for a host with no internet access. Needs
-# curl, tar, python3, and port 18080 for the mock API; the PowerShell tarball is extracted by the
+# curl, tar, python3, and ports 18080-18081 for the mock API; the PowerShell tarball is extracted by the
 # installer when pwsh is not on the PATH, which needs the ICU library.
 set -euo pipefail
 
@@ -147,7 +147,7 @@ place_mock_config() {
     python3 -c '
 import json, sys
 config = json.load(open(sys.argv[1]))
-for key in ("StateDirectory", "EventLogDirectory"):
+for key in ("StateDirectory", "AlertLogDirectory"):
     config["Defaults"].pop(key, None)
 with open(sys.argv[2], "w") as out:
     json.dump(config, out, indent=2)
@@ -179,7 +179,7 @@ get_installers() {
 # do (the mock wants a login first, so a plain GET is a 401).
 start_mock() {
     local tries
-    python3 "$REPO/tools/test/mock_api.py" "$MOCK_PORT" > "$TMP/mock.log" 2>&1 &
+    python3 "$REPO/tools/test/mock_api.py" "$MOCK_PORT" "$((MOCK_PORT + 1))" > "$TMP/mock.log" 2>&1 &
     MOCK_PID=$!
     for ((tries = 0; tries < 15; tries++)); do
         if ! kill -0 "$MOCK_PID" 2> /dev/null; then

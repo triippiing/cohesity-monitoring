@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Needs the mock Cohesity API on 127.0.0.1:18080 (tools/test/mock_api.py 18080) and pwsh on the PATH.
+# Needs the mock Cohesity API on 127.0.0.1:18080 (tools/test/mock_api.py 18080 18081) and pwsh on the PATH.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); source "$here/helpers.sh"; source "$here/../../../linux/lib.sh"
 inst=$here/../../../linux/install.sh; repo=$here/../../..; tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -27,7 +27,7 @@ done
 assert_grep "$tmp/units/cohesity-node-exporter.service" -- '--web.listen-address=127.0.0.1:9182'
 # the summary has a row per step, and the collector row carries the collector's own line
 assert_grep "$tmp/run1.out" '^Credentials  *Skipped  *--skip-credentials$'
-assert_grep "$tmp/run1.out" '^Collector test  *OK  *Wrote [0-9]* samples for 2 server(s) to '
+assert_grep "$tmp/run1.out" '^Collector test  *OK  *Wrote [0-9]* samples for 2 cluster(s) to '
 assert_grep "$tmp/run1.out" '^node_exporter  *OK  *extracted node_exporter-1.9.1.linux-amd64.tar.gz$'
 assert_grep "$tmp/run1.out" '^Prometheus  *OK  *extracted prometheus-3.15.0.linux-amd64.tar.gz$'
 assert_grep "$tmp/run1.out" '^Grafana  *OK  *extracted grafana-12.0.2.linux-amd64.tar.gz$'

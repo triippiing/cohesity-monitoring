@@ -5,14 +5,14 @@ Shows, stops, starts, pauses or resumes the Cohesity monitoring components on th
 .DESCRIPTION
 Components: the collector scheduled task ('Cohesity Metrics Collector'), the Prometheus scheduled task
 ('Cohesity Prometheus') and the windows_exporter and Grafana Windows services. Nothing here touches the
-appliances.
+clusters.
 
   Status   state of each component, the last collector result, and whether Prometheus, Grafana and
            windows_exporter answer on their ports
   Stop     before host maintenance: disable the collector task, then stop Prometheus, Grafana and
            windows_exporter. Nothing restarts until Start (a reboot alone does not re-enable the collector).
   Start    start windows_exporter, Grafana and Prometheus, re-enable the collector task and run it once
-  Pause    appliance maintenance: disable the collector task only, so a rebooting appliance produces no
+  Pause    cluster maintenance: disable the collector task only, so a rebooting cluster produces no
            failed checks or login events. Prometheus and Grafana keep running and show the last values.
   Resume   re-enable the collector task and run it once
 
@@ -76,7 +76,7 @@ function Start-Collector {
     if ((Get-TaskState $CollectorTask) -eq 'not registered') { Write-Warning "Task '$CollectorTask' is not registered"; return }
     Enable-ScheduledTask -TaskName $CollectorTask | Out-Null
     Start-ScheduledTask -TaskName $CollectorTask
-    Write-Host "Collector task enabled and started (every run takes a few seconds per appliance)"
+    Write-Host "Collector task enabled and started (every run takes a few seconds per cluster)"
 }
 
 switch ($Action) {

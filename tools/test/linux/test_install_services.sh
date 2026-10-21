@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Needs the mock Cohesity API on 127.0.0.1:18080 (tools/test/mock_api.py 18080) and pwsh on the PATH.
+# Needs the mock Cohesity API on 127.0.0.1:18080 (tools/test/mock_api.py 18080 18081) and pwsh on the PATH.
 # Runs the installer with a systemctl shim first on the PATH, so the services step really runs.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); source "$here/helpers.sh"; source "$here/../../../linux/lib.sh"

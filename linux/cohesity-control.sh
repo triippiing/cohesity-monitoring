@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Shows, stops, starts, pauses or resumes the Cohesity monitoring components on this host. This is
-# the Linux counterpart of CohesityMonitoringControl.ps1. Nothing here touches the appliances.
+# the Linux counterpart of CohesityMonitoringControl.ps1. Nothing here touches the clusters.
 #
 # Components: the collector timer (cohesity-collector.timer) and the oneshot service it starts
 # (cohesity-collector.service; journalctl -u cohesity-collector shows the output of its last run),
@@ -14,7 +14,7 @@
 #            Grafana. The units stay enabled, so they start again at the next boot.
 #   start    start Grafana, Prometheus and node_exporter, then the collector timer, which runs the
 #            collector once
-#   pause    appliance maintenance: stop the collector timer only, so a rebooting appliance produces
+#   pause    cluster maintenance: stop the collector timer only, so a rebooting cluster produces
 #            no failed checks or login events. node_exporter, Prometheus and Grafana keep running
 #            and show the last values. A collector run already in progress finishes.
 #   resume   start the collector timer and run the collector once
@@ -50,7 +50,7 @@ usage: cohesity-control.sh <status|stop|start|pause|resume>
            Grafana (they start again at the next boot)
   start    start Grafana, Prometheus, node_exporter and the collector timer, which runs the
            collector once
-  pause    appliance maintenance: stop the collector timer only; Prometheus and Grafana keep
+  pause    cluster maintenance: stop the collector timer only; Prometheus and Grafana keep
            running and show the last values
   resume   start the collector timer and run the collector once
 
@@ -297,7 +297,7 @@ action_pause() {
 action_resume() {
     change_units start "$TIMER"
     if unit_present "$COLLECTOR"; then
-        echo 'Running the collector once (a few seconds per appliance)...'
+        echo 'Running the collector once (a few seconds per cluster)...'
     fi
     # A oneshot: this returns when the run has ended.
     change_units start "$COLLECTOR"
